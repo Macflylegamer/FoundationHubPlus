@@ -989,7 +989,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "1.7-TwoPhase" -- Updated version number
+local AutoLootVersion = "1.8-TwoPhaseFix" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
@@ -1016,10 +1016,10 @@ LeftGroupBox:AddButton({
 
         local goldItemNames = {"Coin", "CoinStack", "GoldBar", "GoldBarAndDiamonds"}
         local itemsLootedCount = 0
-        local overallContainerIndex = 0
-        local partsToLoot = {} -- NEW: Table to store parts that are open and need looting
+        local partsToLootAfterOpening = {} -- Renamed for clarity: Stores parts confirmed open for Phase 2 looting
+        local overallContainerIndex = 0 -- Used for unique logging IDs
 
-        -- Function to try looting an item (unchanged from previous robust version)
+        -- Function to try looting an item (unchanged)
         local function tryFirePromptForItem(itemPromptRef, itemModel, itemContextName)
              if not (itemModel and itemModel.Parent) then return true end
              local originalCFrame = character.HumanoidRootPart.CFrame
@@ -1065,30 +1065,37 @@ LeftGroupBox:AddButton({
              return looted
         end
 
-        -- MODIFIED: Function to try opening a container, checks if already open first.
+        -- MODIFIED: Checks attribute FIRST, returns immediately if open, otherwise attempts opening.
         local function tryOpenContainer_Phase1(prompt, containerPart, promptContextName)
-            local finalResult = { opened = false } -- Only need to know if it ended up open
+            local finalResult = { opened = false }
 
-            if not (prompt and prompt:IsA("ProximityPrompt")) then print("  -- ERROR: Invalid prompt for", promptContextName); return finalResult end
             if not (containerPart and containerPart.Parent) then print("  -- ERROR: Invalid container part for", promptContextName); return finalResult end
 
             -- 1. Check if container is ALREADY open based on its attribute
             local initialOpenState = containerPart:GetAttribute("Open")
             if initialOpenState == true then
+                print("  -- Container", promptContextName, "already open (Attribute=true). Skipping interaction.") -- Explicit log
                 finalResult.opened = true -- It is open
-                print("  -- Container", promptContextName, "already open initially. Skipping open attempt.") -- Info message
-                return finalResult -- Return immediately, it's already open
+                return finalResult -- Return immediately, DO NOT INTERACT
             end
 
-            -- 2. If not already open, attempt persistent opening loop
+            -- 2. If not already open, check if the prompt is valid before proceeding
+            if not (prompt and prompt:IsA("ProximityPrompt") and prompt.Parent) then
+                 print("  -- ERROR: Invalid or missing prompt for", promptContextName, "which is not already open.")
+                 return finalResult -- Cannot open without a valid prompt
+            end
+
+            -- 3. Attempt persistent opening loop (only runs if initialOpenState was false/nil and prompt is valid)
+            print("  -- Container", promptContextName, "is closed. Attempting to open...")
             local attempts = 0
-            local maxAttempts = 20 -- Reduced attempts slightly, should open faster if possible
+            local maxAttempts = 20
             local openedInLoop = false
             local originalCFrame = character.HumanoidRootPart.CFrame
 
             while attempts < maxAttempts do
-                if not (prompt and prompt.Parent and prompt.Enabled) then -- Check prompt validity and enabled state inside loop
-                    print("  -- Prompt for", promptContextName, "became invalid or disabled during loop.")
+                -- Re-check prompt validity and enabled state inside loop
+                if not (prompt and prompt.Parent and prompt.Enabled) then
+                    print("  -- Prompt for", promptContextName, "became invalid or disabled during open attempt.")
                     break
                 end
 
@@ -1102,21 +1109,21 @@ LeftGroupBox:AddButton({
                 if not targetCFrame then print("  -- ERROR: Could not get target CFrame for", promptContextName); break end
 
                 character:PivotTo(targetCFrame)
-                task.wait(0.07) -- Essential wait before fire
+                task.wait(0.07)
 
                 local success, err = pcall(fireproximityprompt, prompt)
-                task.wait(0.1) -- Non-optional wait AFTER firing, BEFORE checking attribute
+                task.wait(0.1) -- Wait AFTER firing, BEFORE checking attribute
 
-                -- Check attribute again immediately after firing + wait
+                -- Check attribute again
                 local currentOpenState = containerPart:GetAttribute("Open")
                 if currentOpenState == true then
                     openedInLoop = true
-                    print("  -- Successfully opened", promptContextName, "in loop.")
-                    break -- Exit loop, it opened successfully
+                    print("  -- Successfully opened", promptContextName, "via prompt.")
+                    break -- Exit loop
                 end
 
                 attempts = attempts + 1
-                if not disableMicroWaits then task.wait(0.05) end -- Shorter optional wait between attempts
+                if not disableMicroWaits then task.wait(0.05) end
             end
 
             character:PivotTo(originalCFrame)
@@ -1125,20 +1132,19 @@ LeftGroupBox:AddButton({
                  print("  -- WARNING: Persistent open loop finished but", promptContextName, "did not open (attempts:", attempts, ")")
             end
 
-            finalResult.opened = openedInLoop -- Set final 'opened' status based on loop result
+            finalResult.opened = openedInLoop
             return finalResult
         end
 
         -- Function to find and loot gold within a specific container part (unchanged)
-        -- It now increments the upvalue 'itemsLootedCount' directly
         local function findAndLootGold(itemContainer, containerContextName)
+            -- This function remains the same as in 1.7 / 1.8
             print("  -- [Loot Phase] Searching for gold inside:", containerContextName, "Part:", itemContainer and itemContainer:GetFullName() or "nil")
             if not itemContainer then print("    -- ERROR: itemContainer is nil."); return end
 
             local itemParentToSearch = itemContainer
             local isRolltopInner = containerContextName:find("Rolltop MainDrawer")
 
-            -- Determine the actual parent of items (ItemSpawns, SpawnAreas, or direct children)
             if not isRolltopInner then
                 local itemSpawns = itemContainer:FindFirstChild("ItemSpawns") or itemContainer:FindFirstChild("SpawnAreas")
                 if not itemSpawns and itemContainer:FindFirstChild("BaseOutline") then
@@ -1147,8 +1153,6 @@ LeftGroupBox:AddButton({
                 if itemSpawns then
                     itemParentToSearch = itemSpawns
                 else
-                    -- If no specific spawn area, search directly inside the provided container part
-                    -- This handles cases like Drawers/Lockers where items might be direct children of 'Base' or 'MainDrawer'
                     print("    -- No ItemSpawns/SpawnAreas found in", itemContainer:GetFullName(), ". Searching directly inside.")
                 end
             else
@@ -1160,7 +1164,7 @@ LeftGroupBox:AddButton({
             if #potentialItems == 0 then print("    -- No items found inside."); return end
 
             for i, item in ipairs(potentialItems) do
-                if not (item and item.Parent) then continue end -- Skip if item disappeared
+                if not (item and item.Parent) then continue end
 
                 if table.find(goldItemNames, item.Name) then
                     print("      -- Found gold item:", item.Name)
@@ -1168,7 +1172,7 @@ LeftGroupBox:AddButton({
                     if itemPrompt then
                         if tryFirePromptForItem(itemPrompt, item, item.Name .. " ItemPrompt in " .. containerContextName) then
                             print("        -- Successfully looted:", item.Name)
-                            itemsLootedCount = itemsLootedCount + 1 -- Increment global counter
+                            itemsLootedCount = itemsLootedCount + 1
                             if not disableMicroWaits then task.wait(0.05) end
                         else
                             print("        -- FAILED persistent loot for:", item.Name)
@@ -1182,200 +1186,211 @@ LeftGroupBox:AddButton({
 
 
         -- =============================================================
-        -- Phase 1: Open All Containers & Identify Loot Locations
+        -- Phase 1: Traverse, Open Containers & Identify Loot Locations
         -- =============================================================
-        print("\n-- Starting Phase 1: Opening Containers --")
-        local containersToProcess = {} -- Collect models to process
+        print("\n-- Starting Phase 1: Opening Containers & Identifying Loot Locations --")
 
-        -- Collect all potential container models first
-        local function collectModels(parent)
-            local children = parent:GetChildren()
+        -- NEW: Recursive function to process items (Models, Folders)
+        local function processItemForOpening(item)
+            if not item or not item.Parent then return end
+
+            local children = item:GetChildren()
             for _, child in ipairs(children) do
-                if child:IsA("Model") then
-                    local isKnownContainer = child.Name:find("LockerVariant") or child.Name:find("CrowbarVariant") or
-                                             child.Name == "Drawer" or child.Name:find("Table") or
-                                             child.Name == "Rolltop" or child.Name == "ToolBox"
-                    if isKnownContainer then
-                        table.insert(containersToProcess, child)
-                    -- Handle SideRoom logic if enabled
-                    elseif lootSideRooms and child.Name == "SideRoom" then
-                         print("  -- Found 'SideRoom' Model. Collecting containers inside...")
-                         collectModels(child) -- Recursively collect from SideRoom
-                    -- Handle AddedAssets folder inside SideRoom
-                    elseif lootSideRooms and child.Name == "AddedAssets" and child:IsA("Folder") and parent.Name == "SideRoom" then
-                         print("    -- Found 'AddedAssets' inside SideRoom. Collecting...")
-                         collectModels(child)
-                    end
-                -- Handle top-level AddedAssets folder
-                elseif child.Name == "AddedAssets" and child:IsA("Folder") and parent == currentRoomModel then
-                     print("  -- Found top-level 'AddedAssets' Folder. Collecting containers inside...")
-                     collectModels(child)
-                end
-            end
-        end
+                if not child or not child.Parent then continue end -- Skip if child disappeared
 
-        collectModels(currentRoomModel) -- Start collection from the current room
+                -- Case 1: Known Container Model
+                local isKnownContainer = child:IsA("Model") and (
+                                         child.Name:find("LockerVariant") or child.Name:find("CrowbarVariant") or
+                                         child.Name == "Drawer" or child.Name:find("Table") or
+                                         child.Name == "Rolltop" or child.Name == "ToolBox")
 
-        print("-- Found", #containersToProcess, "potential container models to process.")
+                if isKnownContainer then
+                    overallContainerIndex = overallContainerIndex + 1
+                    local containerModel = child
+                    local modelIndex = overallContainerIndex -- Use unique index for logging
+                    warn("-- [Open Phase] Processing Container:", containerModel.Name, "#", modelIndex, "(", containerModel:GetFullName(), ")")
 
-        -- Now process the collected container models for opening
-        for i, containerModel in ipairs(containersToProcess) do
-            overallContainerIndex = overallContainerIndex + 1
-            warn("-- [Open Phase] Processing:", containerModel.Name, " #", overallContainerIndex, "(", containerModel:GetFullName(), ")")
+                    local containerChildren = containerModel:GetChildren()
+                    local lootPart = nil -- The part where loot *should* be if opened
+                    local openedSuccessfully = false -- Flag to track if *any* part of the container is open
 
-            local children = containerModel:GetChildren()
-            local lootPart = nil -- The part where loot *should* be if opened
-
-            -- Handle Lockers/Crowbars
-            if containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
-                local openedAnyDoor = false
-                if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
-                    local doorBottom = containerModel:FindFirstChild("DoorBottom")
-                    local doorTop = containerModel:FindFirstChild("DoorTop")
-                    if doorBottom then
-                        local promptBottom = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt")
-                        if tryOpenContainer_Phase1(promptBottom, doorBottom, containerModel.Name .. " Bottom Door #" .. overallContainerIndex).opened then openedAnyDoor = true end
-                        if not disableMicroWaits then task.wait(0.05) end
-                    end
-                    if doorTop then
-                        local promptTop = doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt")
-                        if tryOpenContainer_Phase1(promptTop, doorTop, containerModel.Name .. " Top Door #" .. overallContainerIndex).opened then openedAnyDoor = true end
-                    end
-                else
-                    local door = containerModel:FindFirstChild("Door")
-                    if door then
-                        local prompt = door:FindFirstChild("ProximityPrompt")
-                        if tryOpenContainer_Phase1(prompt, door, containerModel.Name .. " Door #" .. overallContainerIndex).opened then openedAnyDoor = true end
-                    end
-                end
-                -- If any door is open (or was already open), find the Base part to loot later
-                if openedAnyDoor then
-                    for _, child in ipairs(children) do
-                        if (child.Name == "Container" or child.Name == "OpenedSTORAGE") and child:IsA("Model") then
-                            lootPart = child:FindFirstChild("Base")
-                            if lootPart then break end
+                    -- Handle Lockers/Crowbars
+                    if containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
+                        local openedAnyDoor = false
+                        if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
+                            local doorBottom = containerModel:FindFirstChild("DoorBottom")
+                            local doorTop = containerModel:FindFirstChild("DoorTop")
+                            if doorBottom then
+                                local promptBottom = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt")
+                                if tryOpenContainer_Phase1(promptBottom, doorBottom, containerModel.Name .. " Bottom Door #" .. modelIndex).opened then openedAnyDoor = true end
+                                if not disableMicroWaits then task.wait(0.05) end
+                            end
+                            if doorTop then
+                                local promptTop = doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt")
+                                if tryOpenContainer_Phase1(promptTop, doorTop, containerModel.Name .. " Top Door #" .. modelIndex).opened then openedAnyDoor = true end
+                            end
+                        else
+                            local door = containerModel:FindFirstChild("Door")
+                            if door then
+                                local prompt = door:FindFirstChild("ProximityPrompt")
+                                if tryOpenContainer_Phase1(prompt, door, containerModel.Name .. " Door #" .. modelIndex).opened then openedAnyDoor = true end
+                            end
                         end
-                    end
-                end
-
-            -- Handle Drawer
-            elseif containerModel.Name == "Drawer" then
-                -- Drawers can have multiple inner containers
-                for _, child in ipairs(children) do
-                    if (child.Name:find("Container", 1, true) or child.Name == "OpenedSTORAGE") and child.Name ~= "Outside_Container" and child:IsA("Model") then
-                        local mainDrawer = child:FindFirstChild("MainDrawer")
-                        if mainDrawer then
-                            local proxAttach = mainDrawer:FindFirstChild("ProxAttach")
-                            local openedThisDrawer = false
-                            if proxAttach then
-                                local prompt = proxAttach:FindFirstChild("ProximityPrompt")
-                                if tryOpenContainer_Phase1(prompt, mainDrawer, child.Name .. " Prompt #" .. overallContainerIndex).opened then
-                                    openedThisDrawer = true
+                        openedSuccessfully = openedAnyDoor -- Set overall success flag
+                        if openedSuccessfully then
+                            for _, cChild in ipairs(containerChildren) do
+                                if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then
+                                    lootPart = cChild:FindFirstChild("Base")
+                                    if lootPart then break end
                                 end
                             end
-                            -- If this specific drawer is open, add its MainDrawer part to the loot list
-                            if openedThisDrawer then
-                                print("    -- Drawer", child.Name, "is open. Adding MainDrawer to loot list.")
-                                table.insert(partsToLoot, mainDrawer)
+                        end
+
+                    -- Handle Drawer
+                    elseif containerModel.Name == "Drawer" then
+                        -- Drawers have multiple potential loot spots
+                        local addedAnyDrawer = false
+                        for _, cChild in ipairs(containerChildren) do
+                            if (cChild.Name:find("Container", 1, true) or cChild.Name == "OpenedSTORAGE") and cChild.Name ~= "Outside_Container" and cChild:IsA("Model") then
+                                local mainDrawer = cChild:FindFirstChild("MainDrawer")
+                                if mainDrawer then
+                                    local proxAttach = mainDrawer:FindFirstChild("ProxAttach")
+                                    local openedThisDrawer = false
+                                    if proxAttach then
+                                        local prompt = proxAttach:FindFirstChild("ProximityPrompt")
+                                        if tryOpenContainer_Phase1(prompt, mainDrawer, cChild.Name .. " Prompt #" .. modelIndex).opened then
+                                            openedThisDrawer = true
+                                        end
+                                    else -- Handle cases where drawer might start open without a prompt interaction needed
+                                         if mainDrawer:GetAttribute("Open") == true then openedThisDrawer = true end
+                                    end
+
+                                    if openedThisDrawer then
+                                        print("    -- Drawer", cChild.Name, "is open. Adding MainDrawer to loot list.")
+                                        table.insert(partsToLootAfterOpening, mainDrawer)
+                                        addedAnyDrawer = true
+                                    end
+                                end
                             end
                         end
-                    end
-                end
-                -- Always add Outside_Container for Drawers if it exists
-                local outsideContainer = containerModel:FindFirstChild("Outside_Container")
-                if outsideContainer then
-                    print("    -- Adding Drawer Outside_Container to loot list.")
-                    table.insert(partsToLoot, outsideContainer)
-                end
-                lootPart = nil -- Handled inside the loop for drawers
+                        local outsideContainer = containerModel:FindFirstChild("Outside_Container")
+                        if outsideContainer then
+                            print("    -- Adding Drawer Outside_Container to loot list.")
+                            table.insert(partsToLootAfterOpening, outsideContainer)
+                            addedAnyDrawer = true -- Consider outside container as part of success
+                        end
+                        openedSuccessfully = addedAnyDrawer -- Set overall success if any part was added
+                        lootPart = nil -- Handled internally for drawers
 
-            -- Handle Rolltop
-            elseif containerModel.Name == "Rolltop" then
-                local mainDrawerRef = nil
-                local openedRolltop = false
-                for _, child in ipairs(children) do
-                    if (child.Name == "Container" or child.Name == "OpenedSTORAGE") and child:IsA("Model") then
-                         mainDrawerRef = child:FindFirstChild("MainDrawer")
-                         if mainDrawerRef then
-                             local proxAttach = mainDrawerRef:FindFirstChild("ProxAttach")
-                             if proxAttach then
-                                 local prompt = proxAttach:FindFirstChild("ProximityPrompt")
-                                 if tryOpenContainer_Phase1(prompt, mainDrawerRef, "Rolltop Container Prompt #" .. overallContainerIndex).opened then
-                                     openedRolltop = true
+                    -- Handle Rolltop
+                    elseif containerModel.Name == "Rolltop" then
+                        local mainDrawerRef = nil
+                        local openedRolltop = false
+                        for _, cChild in ipairs(containerChildren) do
+                            if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then
+                                 mainDrawerRef = cChild:FindFirstChild("MainDrawer")
+                                 if mainDrawerRef then
+                                     local proxAttach = mainDrawerRef:FindFirstChild("ProxAttach")
+                                     if proxAttach then
+                                         local prompt = proxAttach:FindFirstChild("ProximityPrompt")
+                                         if tryOpenContainer_Phase1(prompt, mainDrawerRef, "Rolltop Container Prompt #" .. modelIndex).opened then
+                                             openedRolltop = true
+                                         end
+                                     else -- Handle cases where it might start open
+                                         if mainDrawerRef:GetAttribute("Open") == true then openedRolltop = true end
+                                     end
+                                     break
                                  end
+                            end
+                        end
+                        openedSuccessfully = openedRolltop -- Set overall success
+                        if openedSuccessfully and mainDrawerRef then
+                            print("    -- Rolltop is open. Adding MainDrawer to loot list.")
+                            table.insert(partsToLootAfterOpening, mainDrawerRef)
+                        end
+                        local outsideContainer = containerModel:FindFirstChild("Outside_Container")
+                        if outsideContainer then
+                            print("    -- Adding Rolltop Outside_Container to loot list.")
+                            table.insert(partsToLootAfterOpening, outsideContainer)
+                            openedSuccessfully = true -- Consider outside container as part of success
+                        end
+                        lootPart = nil -- Handled internally
+
+                    -- Handle ToolBox
+                    elseif containerModel.Name == "ToolBox" then
+                         local innerContainerRef = nil
+                         local openedToolbox = false
+                         for _, cChild in ipairs(containerChildren) do
+                             if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then
+                                innerContainerRef = cChild
+                                break
                              end
-                             break
+                         end
+                         if innerContainerRef then
+                             local toolboxPrompt = containerModel:FindFirstChild("ProximityPrompt")
+                             if toolboxPrompt then
+                                 if tryOpenContainer_Phase1(toolboxPrompt, innerContainerRef, "ToolBox Prompt #" .. modelIndex).opened then
+                                     openedToolbox = true
+                                 end
+                             else -- Handle cases where it might start open
+                                 if innerContainerRef:GetAttribute("Open") == true then openedToolbox = true end
+                             end
+                         end
+                         openedSuccessfully = openedToolbox -- Set overall success
+                         if openedSuccessfully and innerContainerRef then
+                             local baseRef = innerContainerRef:FindFirstChild("Base")
+                             if baseRef then
+                                 lootPart = baseRef:FindFirstChild("SpawnAreas")
+                             end
+                         end
+
+                    -- Handle Tables (No opening needed, just add Outside_Container)
+                    elseif containerModel.Name:find("Table") then
+                         lootPart = containerModel:FindFirstChild("Outside_Container")
+                         if lootPart then
+                             print("    -- Found Table. Adding Outside_Container to loot list.")
+                             openedSuccessfully = true -- Tables are always "open" for looting outside
                          end
                     end
-                end
-                -- If the rolltop is open, add its MainDrawer to the loot list
-                if openedRolltop and mainDrawerRef then
-                    print("    -- Rolltop is open. Adding MainDrawer to loot list.")
-                    table.insert(partsToLoot, mainDrawerRef)
-                end
-                -- Always add Outside_Container for Rolltops if it exists
-                local outsideContainer = containerModel:FindFirstChild("Outside_Container")
-                if outsideContainer then
-                    print("    -- Adding Rolltop Outside_Container to loot list.")
-                    table.insert(partsToLoot, outsideContainer)
-                end
-                lootPart = nil -- Handled above
 
-            -- Handle ToolBox
-            elseif containerModel.Name == "ToolBox" then
-                 local innerContainerRef = nil
-                 local openedToolbox = false
-                 for _, child in ipairs(children) do
-                     if (child.Name == "Container" or child.Name == "OpenedSTORAGE") and child:IsA("Model") then
-                        innerContainerRef = child
-                        break
-                     end
-                 end
-                 if innerContainerRef then
-                     local toolboxPrompt = containerModel:FindFirstChild("ProximityPrompt")
-                     if toolboxPrompt then
-                         if tryOpenContainer_Phase1(toolboxPrompt, innerContainerRef, "ToolBox Prompt #" .. overallContainerIndex).opened then
-                             openedToolbox = true
+                    -- Add the identified single loot part (for Lockers, ToolBox, Tables) if found and opened
+                    if lootPart and lootPart.Parent and openedSuccessfully then
+                        print("    -- Adding", lootPart:GetFullName(), "to loot list.")
+                        table.insert(partsToLootAfterOpening, lootPart)
+                    elseif (containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") or containerModel.Name == "ToolBox") then
+                         if openedSuccessfully and not lootPart then -- Check if it should have had a loot part but didn't
+                             print("    -- WARNING: Container", containerModel.Name, "reported open, but couldn't find primary loot part (Base/SpawnAreas).")
                          end
-                     end
-                 end
-                 -- If the toolbox is open, find the SpawnAreas part to loot later
-                 if openedToolbox and innerContainerRef then
-                     local baseRef = innerContainerRef:FindFirstChild("Base")
-                     if baseRef then
-                         lootPart = baseRef:FindFirstChild("SpawnAreas")
-                     end
-                 end
+                    end
 
-            -- Handle Tables (No opening needed, just add Outside_Container)
-            elseif containerModel.Name:find("Table") then
-                 lootPart = containerModel:FindFirstChild("Outside_Container")
-                 if lootPart then
-                     print("    -- Found Table. Adding Outside_Container to loot list.")
-                 end
-            end
+                -- Case 2: AddedAssets Folder
+                elseif child.Name == "AddedAssets" and child:IsA("Folder") then
+                    print("  -- Descending into Folder:", child:GetFullName())
+                    processItemForOpening(child) -- Recurse into the folder
 
-            -- Add the identified loot part to the list if found
-            if lootPart and lootPart.Parent then -- Check parent exists
-                print("    -- Adding", lootPart:GetFullName(), "to loot list.")
-                table.insert(partsToLoot, lootPart)
-            elseif containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") or containerModel.Name == "ToolBox" then
-                 if openedAnyDoor or openedToolbox then -- Check flags specific to these types
-                     print("    -- WARNING: Container", containerModel.Name, "reported open, but couldn't find loot part (Base/SpawnAreas).")
-                 end
-            end
+                -- Case 3: SideRoom Model (if enabled)
+                elseif lootSideRooms and child.Name == "SideRoom" and child:IsA("Model") then
+                    print("  -- Descending into SideRoom Model:", child:GetFullName())
+                    processItemForOpening(child) -- Recurse into the SideRoom model
 
-            task.wait() -- Yield between processing each container model in Phase 1
-        end
-        print("-- Finished Phase 1: Opening Containers. Identified", #partsToLoot, "potential loot locations.")
+                end -- End of item type checks
+
+                task.wait() -- Yield between processing children
+            end -- End of children loop
+        end -- End of processItemForOpening function
+
+        -- Start the recursive processing from the current room
+        processItemForOpening(currentRoomModel)
+
+        print("-- Finished Phase 1. Identified", #partsToLootAfterOpening, "potential loot locations.")
 
         -- =============================================================
         -- Intermediate Step: Global Wait
         -- =============================================================
-        if lootWaitTime > 0 and #partsToLoot > 0 then
+        if lootWaitTime > 0 and #partsToLootAfterOpening > 0 then
             print("\n-- Performing global wait for", lootWaitTime, "seconds...")
             task.wait(lootWaitTime)
-        elseif #partsToLoot == 0 then
+        elseif #partsToLootAfterOpening == 0 then
              print("\n-- No open containers found or identified for looting. Skipping wait and Loot Phase.")
         else
              print("\n-- Loot wait time is 0. Proceeding directly to Loot Phase.")
@@ -1384,19 +1399,30 @@ LeftGroupBox:AddButton({
         -- =============================================================
         -- Phase 2: Loot Gold from Identified Locations
         -- =============================================================
-        if #partsToLoot > 0 then
+        if #partsToLootAfterOpening > 0 then
             print("\n-- Starting Phase 2: Looting Gold --")
-            for i, part in ipairs(partsToLoot) do
+            local uniquePartsLooted = {} -- Prevent looting the same part multiple times if added erroneously
+            for i, part in ipairs(partsToLootAfterOpening) do
                 if not (part and part.Parent) then
                     print("  -- [Loot Phase] Skipping part #", i, "as it no longer exists.")
                     continue
                 end
-                -- Construct a meaningful context name for logging
-                local contextName = part.Parent.Name -- e.g., Base, MainDrawer, Outside_Container
-                if part.Parent.Parent and part.Parent.Parent:IsA("Model") then
-                     contextName = part.Parent.Parent.Name .. " " .. contextName -- e.g., Drawer Container MainDrawer
+                -- Check if this exact part instance has already been processed in this phase
+                if uniquePartsLooted[part] then
+                     print("  -- [Loot Phase] Skipping part #", i, "(", part:GetFullName(), ") as it was already processed.")
+                     continue
                 end
+
+                -- Construct a meaningful context name for logging
+                local contextName = part.Name
+                local parentModel = part:FindFirstAncestorWhichIsA("Model")
+                if parentModel then
+                     contextName = parentModel.Name .. " " .. contextName
+                end
+
                 findAndLootGold(part, contextName .. " #" .. i) -- Call the original looting function
+                uniquePartsLooted[part] = true -- Mark this part instance as processed
+
                 if not disableMicroWaits then task.wait(0.05) end -- Small delay between looting different containers
             end
             print("-- Finished Phase 2: Looting Gold --")
