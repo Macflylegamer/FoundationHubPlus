@@ -1034,23 +1034,25 @@ LeftGroupBox:AddButton({
         local itemsLootedCount = 0
         local overallContainerIndex = 0
 
-        -- Definition of tryFirePromptForItem (Paste the full function here)
+        -- FINAL FINAL FINAL VERSION + Persistent Open + UNLIMITED Gold Loot Attempts (Most Robust + Initial Wait):
         local function tryFirePromptForItem(itemPromptRef, itemModel, itemContextName)
-             -- Paste the full function code from the previous response here...
-             -- It starts with: if not (itemModel and itemModel.Parent) then return true end
-             -- It ends with: return looted
             if not (itemModel and itemModel.Parent) then return true end
-            if not (itemPromptRef and itemPromptRef:IsA("ProximityPrompt")) then
-                 print("  -- WARNING: Initial ItemPrompt reference invalid for", itemContextName, "- will retry find.")
-            end
+            -- Removed initial prompt check here, rely on loop find
 
             local originalCFrame = character.HumanoidRootPart.CFrame
             local looted = false
             local attempts = 0
-            local maxLoopTime = 5
+            local maxLoopTime = 7 -- Slightly increased timeout
             local startTime = tick()
+            local firstAttempt = true -- Flag for initial wait
 
             while itemModel and itemModel.Parent and (tick() - startTime < maxLoopTime) do
+                -- Add a small wait on the very first attempt ONLY, allows prompt to potentially spawn
+                if firstAttempt then
+                    task.wait(0.1)
+                    firstAttempt = false
+                end
+
                 local currentItemPrompt = itemModel:FindFirstChild("ItemPrompt")
 
                 if currentItemPrompt and currentItemPrompt:IsA("ProximityPrompt") and currentItemPrompt.Enabled then
@@ -1064,22 +1066,20 @@ LeftGroupBox:AddButton({
 
                     if targetCFrame then
                         character:PivotTo(targetCFrame)
-                        task.wait(0.05)
+                        task.wait(0.05) -- ESSENTIAL wait
 
                         local success, err = pcall(fireproximityprompt, currentItemPrompt)
-                        task.wait(0.07)
+                        task.wait(0.07) -- ESSENTIAL wait
 
                         if not itemModel or not itemModel.Parent then
                             looted = true
                             break
                         end
                     end
-                else
-                    -- Prompt not ready yet
                 end
 
                 attempts = attempts + 1
-                task.wait(0.1)
+                task.wait(0.1) -- Wait between attempts/checks
 
             end -- End of while loop
 
@@ -1095,9 +1095,9 @@ LeftGroupBox:AddButton({
             return looted
         end
 
-        -- FINAL FINAL FINAL VERSION + Persistent Open (Refined Wait + Correct Already Open Handling):
+        -- FINAL FINAL FINAL VERSION + Persistent Open (Correct Already Open + Wait Logic):
         local function tryOpenContainer(prompt, containerPart, promptContextName)
-            local finalResult = { opened = false, firstTime = false } -- Fields: did it successfully open?, was this the first time?
+            local finalResult = { opened = false, firstTime = false }
 
             if not (prompt and prompt:IsA("ProximityPrompt")) then print("  -- ERROR: Invalid prompt for", promptContextName); return finalResult end
             if not (containerPart and containerPart.Parent) then print("  -- ERROR: Invalid container part for", promptContextName); return finalResult end
@@ -1105,16 +1105,16 @@ LeftGroupBox:AddButton({
             -- 1. Check if container is ALREADY open based on its attribute
             local initialOpenState = containerPart:GetAttribute("Open")
             if initialOpenState == true then
-                -- print("  -- Container", promptContextName, "already open initially.") -- Keep commented
                 finalResult.opened = true -- It is open
                 finalResult.firstTime = false -- Cannot be first time if already open
-                return finalResult -- Return immediately, DO NOT proceed to fire prompt
+                -- print("  -- Container", promptContextName, "already open initially. Skipping open attempt.") -- Keep commented
+                return finalResult -- Return immediately
             end
 
             -- 2. If not already open, determine if this is the first interaction based on prompt attribute
             local wasOpenedBefore = prompt:GetAttribute("Opened")
-            if wasOpenedBefore == nil then wasOpenedBefore = true end -- Treat nil as true (already opened before)
-            finalResult.firstTime = not wasOpenedBefore -- It's the first time if 'Opened' was explicitly false
+            if wasOpenedBefore == nil then wasOpenedBefore = true end
+            finalResult.firstTime = not wasOpenedBefore -- Only true if 'Opened' was explicitly false
 
             -- 3. Attempt persistent opening loop (only runs if initialOpenState was false or nil)
             local attempts = 0
@@ -1122,17 +1122,14 @@ LeftGroupBox:AddButton({
             local openedInLoop = false
             local originalCFrame = character.HumanoidRootPart.CFrame
 
-            -- print("  -- Starting persistent open loop for:", promptContextName) -- Keep commented
             while attempts < maxAttempts do
-                -- Re-check current state inside loop before firing (should still be false/nil initially)
-                local currentOpenState = containerPart:GetAttribute("Open")
-                if currentOpenState == true then
-                    openedInLoop = true
-                    break -- Exit loop, it's open now
+                -- Check prompt enabled inside loop FIRST
+                if not prompt.Enabled then
+                    print("  -- Prompt for", promptContextName, "disabled during loop.") -- Keep commented
+                    break -- Cannot continue if prompt is disabled
                 end
 
-                if not prompt.Enabled then break end -- Cannot continue if prompt is disabled
-
+                -- Get parent and CFrame
                 local promptParent = prompt.Parent
                 if not promptParent then break end
 
@@ -1151,7 +1148,7 @@ LeftGroupBox:AddButton({
                 task.wait(0.1) -- Non-optional wait AFTER firing, BEFORE checking attribute
 
                 -- Check attribute again immediately after firing + wait
-                currentOpenState = containerPart:GetAttribute("Open")
+                local currentOpenState = containerPart:GetAttribute("Open")
                 if currentOpenState == true then
                     openedInLoop = true
                     break -- Exit loop, it opened successfully
@@ -1234,7 +1231,7 @@ LeftGroupBox:AddButton({
             end
         end -- End of findAndLootGold function
 
-        -- FINAL FINAL FINAL VERSION + Correct Toolbox Logic + Correct Wait Logic:
+        -- FINAL FINAL FINAL VERSION + Correct ToolBox Logic + Correct Wait Logic:
         local function processContainerModel(containerModel, containerIndex)
             if not containerModel or not containerModel:IsA("Model") then return end
             local handled = false
@@ -1248,7 +1245,7 @@ LeftGroupBox:AddButton({
                     local base = child:FindFirstChild("Base")
                     local mainDrawer = child:FindFirstChild("MainDrawer")
                     if base then
-                        if containerModel.Name == "Toolbox" then
+                        if containerModel.Name == "ToolBox" then
                             local spawnAreas = base:FindFirstChild("SpawnAreas")
                             if spawnAreas then
                                 findAndLootGold(spawnAreas, containerModel.Name .. " OpenedSTORAGE SpawnAreas #" .. containerIndex)
@@ -1370,8 +1367,8 @@ LeftGroupBox:AddButton({
                 local outsideContainer = containerModel:FindFirstChild("Outside_Container")
                 if outsideContainer then findAndLootGold(outsideContainer, "Rolltop Outside_Container #" .. containerIndex) end
 
-            -- Handle Toolbox
-            elseif containerModel.Name == "Toolbox" then
+            -- Handle ToolBox
+            elseif containerModel.Name == "ToolBox" then
                  handled = true
                  local firstTimeOpen = false
                  local innerContainerRef = nil
@@ -1386,7 +1383,7 @@ LeftGroupBox:AddButton({
                  if innerContainerRef then
                      local toolboxPrompt = containerModel:FindFirstChild("ProximityPrompt")
                      if toolboxPrompt then
-                         local openResult = tryOpenContainer(toolboxPrompt, innerContainerRef, "Toolbox Prompt #" .. containerIndex)
+                         local openResult = tryOpenContainer(toolboxPrompt, innerContainerRef, "ToolBox Prompt #" .. containerIndex)
                          -- Check BOTH opened and firstTime
                          if openResult.opened and openResult.firstTime then firstTimeOpen = true end
                      end
@@ -1397,12 +1394,12 @@ LeftGroupBox:AddButton({
                  end
                  -- Wait ONLY if the toolbox was successfully opened for the first time
                  if firstTimeOpen and lootWaitTime > 0 then
-                     print("    -- Waiting", lootWaitTime, "sec after first Toolbox open...")
+                     print("    -- Waiting", lootWaitTime, "sec after first ToolBox open...")
                      task.wait(lootWaitTime)
                  end
                  -- Always try to loot SpawnAreas if found
                  if spawnAreasRef and spawnAreasRef.Parent then
-                     findAndLootGold(spawnAreasRef, "Toolbox SpawnAreas #" .. containerIndex)
+                     findAndLootGold(spawnAreasRef, "ToolBox SpawnAreas #" .. containerIndex)
                  end
 
             -- Handle Tables
@@ -1413,75 +1410,79 @@ LeftGroupBox:AddButton({
             end
         end -- End of processContainerModel function
 
-        -- Main Loop (Paste the full loop here)
-        -- It starts with: print("-- Starting loop through current room's children --")
-        -- It ends with: Library:Notify("Auto Loot Gold Finished..."
+        -- Main Loop - Handles SideRoom Models correctly
         print("-- Starting loop through current room's children --")
         local roomChildren = currentRoomModel:GetChildren()
         print("-- DEBUG: Room has", #roomChildren, "direct children.")
 
         for i, roomChild in ipairs(roomChildren) do
-            local processThisChild = false
+            -- print("\n-- DEBUG: Checking room child #", i, ":", roomChild.Name, "(", roomChild.ClassName, ")") -- Optional debug
 
-            if roomChild:IsA("Folder") then
-                if roomChild.Name == "AddedAssets" or lootSideRooms then
-                    print("  -- Found 'AddedAssets' Folder or Side Room Folder. Checking inside...") -- Keep this print
-                    local assetsChildren = roomChild:GetChildren()
-                    for j, assetItem in ipairs(assetsChildren) do
-                        if assetItem:IsA("Model") then
-                            overallContainerIndex = overallContainerIndex + 1
-                            processContainerModel(assetItem, overallContainerIndex)
-                        end
-                        task.wait()
+            -- Handle AddedAssets Folder (Always)
+            if roomChild.Name == "AddedAssets" and roomChild:IsA("Folder") then
+                print("  -- Found 'AddedAssets' Folder. Checking inside...") -- Keep this print
+                local assetsChildren = roomChild:GetChildren()
+                for j, assetItem in ipairs(assetsChildren) do
+                    if assetItem:IsA("Model") then
+                        overallContainerIndex = overallContainerIndex + 1
+                        processContainerModel(assetItem, overallContainerIndex)
                     end
-                    print("  -- Finished checking Folder:", roomChild.Name) -- Keep this print
-                else
-                    -- print("\n-- DEBUG: Skipping Folder:", roomChild.Name, "(LootSideRooms disabled)") -- Optional
+                    task.wait()
                 end
-            elseif roomChild:IsA("Model") then
-                local isKnownContainer = roomChild.Name:find("LockerVariant") or roomChild.Name:find("CrowbarVariant") or
-                                         roomChild.Name == "Drawer" or roomChild.Name:find("Table") or
-                                         roomChild.Name == "Rolltop" or roomChild.Name == "Toolbox" or
-                                         (lootSideRooms and roomChild.Name == "SideRoom") -- Include SideRoom model itself if toggle is on
+                print("  -- Finished checking 'AddedAssets' Folder.")
 
-                if isKnownContainer then
-                     -- print("\n-- DEBUG: Checking Known Model:", roomChild.Name, "(Processing)") -- Optional
-                     overallContainerIndex = overallContainerIndex + 1
-                     processContainerModel(roomChild, overallContainerIndex)
-                -- Handle SideRoom contents if toggle is on
-                elseif lootSideRooms and roomChild.Name == "SideRoom" then
-                     print("  -- Found 'SideRoom' Model. Checking inside...") -- Keep this print
-                     local sideRoomChildren = roomChild:GetChildren()
-                     for j, sideItem in ipairs(sideRoomChildren) do
-                         if sideItem.Name == "AddedAssets" and sideItem:IsA("Folder") then
-                             print("    -- Found 'AddedAssets' inside SideRoom. Checking...") -- Keep this print
-                             local sideAssetsChildren = sideItem:GetChildren()
-                             for k, sideAssetItem in ipairs(sideAssetsChildren) do
-                                 if sideAssetItem:IsA("Model") then
-                                     overallContainerIndex = overallContainerIndex + 1
-                                     processContainerModel(sideAssetItem, overallContainerIndex)
-                                 end
-                                 task.wait()
+            -- Handle SideRoom Model (If toggle enabled)
+            elseif lootSideRooms and roomChild.Name == "SideRoom" and roomChild:IsA("Model") then
+                 print("  -- Found 'SideRoom' Model. Checking inside...") -- Keep this print
+                 local sideRoomChildren = roomChild:GetChildren()
+                 for j, sideItem in ipairs(sideRoomChildren) do
+                     -- Check for AddedAssets FOLDER inside SideRoom Model
+                     if sideItem.Name == "AddedAssets" and sideItem:IsA("Folder") then
+                         print("    -- Found 'AddedAssets' inside SideRoom. Checking...") -- Keep this print
+                         local sideAssetsChildren = sideItem:GetChildren()
+                         for k, sideAssetItem in ipairs(sideAssetsChildren) do
+                             if sideAssetItem:IsA("Model") then
+                                 overallContainerIndex = overallContainerIndex + 1
+                                 processContainerModel(sideAssetItem, overallContainerIndex)
                              end
-                         elseif sideItem:IsA("Model") then
+                             task.wait()
+                         end
+                     -- Check for container MODELS directly inside SideRoom Model
+                     elseif sideItem:IsA("Model") then
+                         local isKnownContainer = sideItem.Name:find("LockerVariant") or sideItem.Name:find("CrowbarVariant") or
+                                                  sideItem.Name == "Drawer" or sideItem.Name:find("Table") or
+                                                  sideItem.Name == "Rolltop" or sideItem.Name == "ToolBox"
+                         if isKnownContainer then
+                             -- print("    -- Found Known Container Model inside SideRoom.") -- Optional debug
                              overallContainerIndex = overallContainerIndex + 1
                              processContainerModel(sideItem, overallContainerIndex)
+                         -- else -- Optional: Log skipped models inside side room
+                             -- print("    -- Skipping Model in SideRoom:", sideItem.Name)
                          end
-                         task.wait()
                      end
-                     print("  -- Finished checking 'SideRoom' Model.") -- Keep this print
-                -- Process other unknown models ONLY if LootSideRooms is explicitly enabled
-                elseif lootSideRooms then
-                     print("\n-- DEBUG: Checking potential side room Model:", roomChild.Name, "(Processing)") -- Keep this print
-                     overallContainerIndex = overallContainerIndex + 1
-                     processContainerModel(roomChild, overallContainerIndex)
-                -- else -- Optional: Log skipped models
-                    -- print("\n-- DEBUG: Skipping Model:", roomChild.Name, "(Not known container & LootSideRooms disabled)")
-                end
-            -- else -- Optional: Log skipped non-folder/non-model
-                 -- print("\n-- DEBUG: Skipping child:", roomChild.Name, "(Type:", roomChild.ClassName, ")")
+                     task.wait()
+                 end
+                 print("  -- Finished checking 'SideRoom' Model.")
+
+            -- Handle Known Container Models directly under the room (Always)
+            elseif roomChild:IsA("Model") and
+                  (roomChild.Name:find("LockerVariant") or roomChild.Name:find("CrowbarVariant") or
+                   roomChild.Name == "Drawer" or roomChild.Name:find("Table") or
+                   roomChild.Name == "Rolltop" or roomChild.Name == "ToolBox") then
+                 -- print("  -- Found Known Container Model directly under room.") -- Optional debug
+                 overallContainerIndex = overallContainerIndex + 1
+                 processContainerModel(roomChild, overallContainerIndex)
+
+            -- Handle Other Models directly under the room (If SideRoom toggle enabled - Experimental)
+            elseif lootSideRooms and roomChild:IsA("Model") then
+                 -- This case might catch things we don't intend to loot if the toggle is on.
+                 -- Consider removing this or adding more specific checks if needed.
+                 print("\n-- DEBUG: Checking potential side room Model:", roomChild.Name, "(Processing)") -- Keep this print
+                 overallContainerIndex = overallContainerIndex + 1
+                 processContainerModel(roomChild, overallContainerIndex)
+
             end
-            task.wait()
+            task.wait() -- Yield between direct children of room
         end
 
         print("-- Finished loop through room children --")
