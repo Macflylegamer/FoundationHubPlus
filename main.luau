@@ -989,7 +989,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "1.5" -- Or any version number you like
+local AutoLootVersion = "1.6" -- Or any version number you like
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
