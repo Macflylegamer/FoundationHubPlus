@@ -989,7 +989,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-
+local AutoLootVersion = "1.5" -- Or any version number you like
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
@@ -1009,8 +1009,8 @@ LeftGroupBox:AddButton({
             - The main loop iterating through room children / AddedAssets / SideRooms
             - The final Library:Notify() call
         ]]
-        -- Start of the Func block to paste:
-        Library:Notify("Auto Loot Gold Started", 1)
+        -- Include version in the starting notification
+        Library:Notify("Auto Loot Gold Started (v" .. AutoLootVersion .. ")", 1)
 
         local player = Players.LocalPlayer
         local character = player.Character
@@ -1095,40 +1095,43 @@ LeftGroupBox:AddButton({
             return looted
         end
 
-        -- Definition of tryOpenContainer (Paste the full function here)
+        -- FINAL FINAL FINAL VERSION + Persistent Open (Refined Wait + Correct Already Open Handling):
         local function tryOpenContainer(prompt, containerPart, promptContextName)
-            -- Paste the full function code from the previous response here...
-            -- It starts with: local finalResult = { opened = false, firstTime = false }
-            -- It ends with: return finalResult
-            local finalResult = { opened = false, firstTime = false }
+            local finalResult = { opened = false, firstTime = false } -- Fields: did it successfully open?, was this the first time?
 
             if not (prompt and prompt:IsA("ProximityPrompt")) then print("  -- ERROR: Invalid prompt for", promptContextName); return finalResult end
             if not (containerPart and containerPart.Parent) then print("  -- ERROR: Invalid container part for", promptContextName); return finalResult end
 
-            local wasOpenedBefore = prompt:GetAttribute("Opened")
-            if wasOpenedBefore == nil then wasOpenedBefore = true end
-            finalResult.firstTime = not wasOpenedBefore
-
+            -- 1. Check if container is ALREADY open based on its attribute
             local initialOpenState = containerPart:GetAttribute("Open")
             if initialOpenState == true then
-                finalResult.opened = true
-                finalResult.firstTime = false
-                return finalResult
+                -- print("  -- Container", promptContextName, "already open initially.") -- Keep commented
+                finalResult.opened = true -- It is open
+                finalResult.firstTime = false -- Cannot be first time if already open
+                return finalResult -- Return immediately, DO NOT proceed to fire prompt
             end
 
+            -- 2. If not already open, determine if this is the first interaction based on prompt attribute
+            local wasOpenedBefore = prompt:GetAttribute("Opened")
+            if wasOpenedBefore == nil then wasOpenedBefore = true end -- Treat nil as true (already opened before)
+            finalResult.firstTime = not wasOpenedBefore -- It's the first time if 'Opened' was explicitly false
+
+            -- 3. Attempt persistent opening loop (only runs if initialOpenState was false or nil)
             local attempts = 0
             local maxAttempts = 20
             local openedInLoop = false
             local originalCFrame = character.HumanoidRootPart.CFrame
 
+            -- print("  -- Starting persistent open loop for:", promptContextName) -- Keep commented
             while attempts < maxAttempts do
+                -- Re-check current state inside loop before firing (should still be false/nil initially)
                 local currentOpenState = containerPart:GetAttribute("Open")
                 if currentOpenState == true then
                     openedInLoop = true
-                    break
+                    break -- Exit loop, it's open now
                 end
 
-                if not prompt.Enabled then break end
+                if not prompt.Enabled then break end -- Cannot continue if prompt is disabled
 
                 local promptParent = prompt.Parent
                 if not promptParent then break end
@@ -1139,31 +1142,33 @@ LeftGroupBox:AddButton({
                 elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame
                 end
 
-                if not targetCFrame then break end
+                if not targetCFrame then break end -- Cannot proceed without target
 
                 character:PivotTo(targetCFrame)
-                task.wait(0.07)
+                task.wait(0.07) -- Essential wait before fire
 
                 local success, err = pcall(fireproximityprompt, prompt)
-                task.wait(0.1) -- Longer non-optional wait
+                task.wait(0.1) -- Non-optional wait AFTER firing, BEFORE checking attribute
 
+                -- Check attribute again immediately after firing + wait
                 currentOpenState = containerPart:GetAttribute("Open")
                 if currentOpenState == true then
                     openedInLoop = true
-                    break
+                    break -- Exit loop, it opened successfully
                 end
 
                 attempts = attempts + 1
-                if not disableMicroWaits then task.wait(0.1) end
+                if not disableMicroWaits then task.wait(0.1) end -- Optional wait between attempts
             end
 
             character:PivotTo(originalCFrame)
 
             if not openedInLoop then
-                 print("  -- WARNING: Persistent open loop finished but", promptContextName, "did not open (attempts:", attempts, ")")
+                 print("  -- WARNING: Persistent open loop finished but", promptContextName, "did not open (attempts:", attempts, ")") -- Keep this warning
             end
 
-            finalResult.opened = openedInLoop
+            finalResult.opened = openedInLoop -- Set final 'opened' status based on loop result
+            -- Ensure firstTime is false if it failed to open in the loop
             if not openedInLoop then finalResult.firstTime = false end
 
             return finalResult
@@ -1229,16 +1234,13 @@ LeftGroupBox:AddButton({
             end
         end -- End of findAndLootGold function
 
-        -- Definition of processContainerModel (Paste the full function here)
+        -- FINAL FINAL FINAL VERSION + Correct Toolbox Logic + Correct Wait Logic:
         local function processContainerModel(containerModel, containerIndex)
-            -- Paste the full function code from the previous response here...
-            -- It starts with: if not containerModel or not containerModel:IsA("Model") then return end
-            -- It ends with: end -- End of processContainerModel function
-             if not containerModel or not containerModel:IsA("Model") then return end
+            if not containerModel or not containerModel:IsA("Model") then return end
             local handled = false
             warn("-- ", containerModel.Name, " #", containerIndex) -- Keep the yellow ID
 
-            local children = containerModel:GetChildren() -- Get children once
+            local children = containerModel:GetChildren()
 
             -- Pass 1: Check for already opened parts (OpenedSTORAGE) and loot immediately
             for _, child in ipairs(children) do
@@ -1261,8 +1263,8 @@ LeftGroupBox:AddButton({
                 end
             end
 
-            -- Pass 2: Check for original container names, open if needed, wait if first time, then loot
-            local anyDoorFirstTime = false
+            -- Pass 2: Handle specific container types, attempting open and then loot
+            local anyDoorFirstTime = false -- Reset flag for each container model
 
             -- Handle Lockers/Crowbars
             if containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
@@ -1273,12 +1275,14 @@ LeftGroupBox:AddButton({
                     if doorBottom then
                         local promptBottom = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt")
                         local resB = tryOpenContainer(promptBottom, doorBottom, containerModel.Name .. " Bottom Door #" .. containerIndex)
+                        -- Check BOTH opened and firstTime
                         if resB.opened and resB.firstTime then anyDoorFirstTime = true end
                         if not disableMicroWaits then task.wait(0.05) end
                     end
                     if doorTop then
                         local promptTop = doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt")
                         local resT = tryOpenContainer(promptTop, doorTop, containerModel.Name .. " Top Door #" .. containerIndex)
+                        -- Check BOTH opened and firstTime
                         if resT.opened and resT.firstTime then anyDoorFirstTime = true end
                     end
                 else
@@ -1286,13 +1290,16 @@ LeftGroupBox:AddButton({
                     if door then
                         local prompt = door:FindFirstChild("ProximityPrompt")
                         local openResult = tryOpenContainer(prompt, door, containerModel.Name .. " Door #" .. containerIndex)
+                        -- Check BOTH opened and firstTime
                         if openResult.opened and openResult.firstTime then anyDoorFirstTime = true end
                     end
                 end
+                 -- Wait ONLY if any door was successfully opened for the first time
                  if anyDoorFirstTime and lootWaitTime > 0 then
                     print("    -- Waiting", lootWaitTime, "sec after first door open...")
                     task.wait(lootWaitTime)
                  end
+                 -- Always try to find and loot Base after attempting open
                  for _, child in ipairs(children) do
                     if (child.Name == "Container" or child.Name == "OpenedSTORAGE") and child:IsA("Model") then
                         local base = child:FindFirstChild("Base")
@@ -1311,16 +1318,19 @@ LeftGroupBox:AddButton({
                         local mainDrawer = child:FindFirstChild("MainDrawer")
                         if mainDrawer then
                             local proxAttach = mainDrawer:FindFirstChild("ProxAttach")
-                            local firstTimeOpen = false
+                            local firstTimeOpen = false -- Reset for each drawer
                             if proxAttach then
                                 local prompt = proxAttach:FindFirstChild("ProximityPrompt")
                                 local openResult = tryOpenContainer(prompt, mainDrawer, child.Name .. " Prompt #" .. containerIndex)
+                                -- Check BOTH opened and firstTime
                                 if openResult.opened and openResult.firstTime then firstTimeOpen = true end
                             end
+                            -- Wait ONLY if THIS drawer was successfully opened for the first time
                             if firstTimeOpen and lootWaitTime > 0 then
                                  print("    -- Waiting", lootWaitTime, "sec after first open for", child.Name, "...")
                                  task.wait(lootWaitTime)
                             end
+                            -- Always try to loot this drawer after attempting open
                             findAndLootGold(mainDrawer, child.Name .. " MainDrawer #" .. containerIndex)
                         end
                     end
@@ -1341,16 +1351,19 @@ LeftGroupBox:AddButton({
                              if proxAttach then
                                  local prompt = proxAttach:FindFirstChild("ProximityPrompt")
                                  local openResult = tryOpenContainer(prompt, mainDrawerRef, "Rolltop Container Prompt #" .. containerIndex)
+                                 -- Check BOTH opened and firstTime
                                  if openResult.opened and openResult.firstTime then firstTimeOpen = true end
                              end
                              break
                          end
                     end
                 end
+                -- Wait ONLY if the inner drawer was successfully opened for the first time
                 if firstTimeOpen and lootWaitTime > 0 then
                      print("    -- Waiting", lootWaitTime, "sec after first open...")
                      task.wait(lootWaitTime)
                 end
+                -- Always try to loot inside if mainDrawerRef exists
                 if mainDrawerRef and mainDrawerRef.Parent then
                      findAndLootGold(mainDrawerRef, "Rolltop MainDrawer #" .. containerIndex)
                 end
@@ -1374,6 +1387,7 @@ LeftGroupBox:AddButton({
                      local toolboxPrompt = containerModel:FindFirstChild("ProximityPrompt")
                      if toolboxPrompt then
                          local openResult = tryOpenContainer(toolboxPrompt, innerContainerRef, "Toolbox Prompt #" .. containerIndex)
+                         -- Check BOTH opened and firstTime
                          if openResult.opened and openResult.firstTime then firstTimeOpen = true end
                      end
                      baseRef = innerContainerRef:FindFirstChild("Base")
@@ -1381,10 +1395,12 @@ LeftGroupBox:AddButton({
                          spawnAreasRef = baseRef:FindFirstChild("SpawnAreas")
                      end
                  end
+                 -- Wait ONLY if the toolbox was successfully opened for the first time
                  if firstTimeOpen and lootWaitTime > 0 then
                      print("    -- Waiting", lootWaitTime, "sec after first Toolbox open...")
                      task.wait(lootWaitTime)
                  end
+                 -- Always try to loot SpawnAreas if found
                  if spawnAreasRef and spawnAreasRef.Parent then
                      findAndLootGold(spawnAreasRef, "Toolbox SpawnAreas #" .. containerIndex)
                  end
@@ -1396,7 +1412,6 @@ LeftGroupBox:AddButton({
                  if outsideContainer then findAndLootGold(outsideContainer, containerModel.Name .. " Outside_Container #" .. containerIndex) end
             end
         end -- End of processContainerModel function
-
 
         -- Main Loop (Paste the full loop here)
         -- It starts with: print("-- Starting loop through current room's children --")
