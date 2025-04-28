@@ -866,17 +866,34 @@ RightGroupBox:AddButton({
                 if not Character or not Character.PrimaryPart then return end -- Need character
 
                 local RoomNumbers = {}
-                if not Rooms then Rooms = workspace.GeneratedRooms; if not Rooms then return end end -- Ensure Rooms exists
+                if not Rooms then Rooms = workspace:FindFirstChild("GeneratedRooms"); if not Rooms then return end end -- Ensure Rooms exists and re-check each step
 
                 for _, Room in Rooms:GetChildren() do
-                    if Room:IsA("Model") then -- Basic check
-                        CollectionService:RemoveTag(Room, "DarkRoom") -- Keep this
-                        local Number = tonumber(Room.Name:gsub("Room", ""))
-                        if Number then table.insert(RoomNumbers, Number) end
+                    if Room:IsA("Model") then -- Keep this check
+
+                        -- SAFER METHOD: Use string.match to extract number only if pattern matches exactly
+                        local numberString = string.match(Room.Name, "^Room(%d+)$") -- Matches "Room" followed ONLY by digits
+
+                        if numberString then -- Check if match was successful (returned the digits)
+                            local Number = tonumber(numberString) -- Convert the extracted digits
+                            if Number then -- Check if tonumber succeeded (it should if match worked)
+                                CollectionService:RemoveTag(Room, "DarkRoom") -- Only remove tag for valid rooms
+                                table.insert(RoomNumbers, Number)
+                            -- else -- Optional: Handle case where tonumber fails even after match (very unlikely)
+                                -- warn("Failed to convert matched number string:", numberString, "for Room:", Room.Name)
+                            end
+                        -- else -- Optional: Handle models that don't match the "Room<number>" pattern silently
+                            -- warn("Skipping non-standard room model:", Room.Name) -- Uncomment to see skipped items
+                        end
                     end
                 end
 
-                if #RoomNumbers == 0 then return end -- No rooms found yet
+                if #RoomNumbers == 0 then
+                    -- It's possible no valid rooms are found initially or between rooms
+                    -- warn("Auto Rooms: No valid room numbers found in GeneratedRooms this step.") -- Optional warning
+                    task.wait(0.5) -- Wait briefly if no rooms found, maybe they are generating
+                    return -- No rooms found yet or only non-standard models present
+                end
 
                 table.sort(RoomNumbers) -- Sort ascending to find the latest
                 local LastRoomNumber = RoomNumbers[#RoomNumbers]
@@ -884,7 +901,12 @@ RightGroupBox:AddButton({
                 local NextRoomNumber = CurrentRoomNumber + 1
                 local RoomToProcess = Rooms:FindFirstChild("Room" .. tostring(CurrentRoomNumber)) -- The room whose exit we need to trigger
 
-                if not RoomToProcess then return end -- Can't find the room to process
+                -- Add a check here in case the room disappeared between getting numbers and finding it
+                if not RoomToProcess then
+                    warn("Auto Rooms: Could not find RoomToProcess (Room" .. CurrentRoomNumber .. ") even though number was listed.")
+                    task.wait(0.1)
+                    return
+                end
 
                 -- Notify logic (remains similar)
                 if not table.find(DoggedRooms, RoomToProcess) then
