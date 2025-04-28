@@ -966,7 +966,7 @@ LeftGroupBox:AddToggle("LootSideRooms", {
 })
 
 LeftGroupBox:AddToggle("UseFastModeToggle", {
-    Text = "Use Fast Gold Loot (No TP First - Risky)", -- Text reflects only gold optimization now
+    Text = "Use Fast Gold Loot (No TP First - Risky)",
     Default = useFastMode,
     Callback = function(Value)
         useFastMode = Value
@@ -990,7 +990,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "2.11-TrueStateCheck" -- Updated version number
+local AutoLootVersion = "2.12-BaseOutlineFix" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
@@ -1036,33 +1036,16 @@ LeftGroupBox:AddButton({
         end
 
         -- Function to trigger a container prompt reliably (teleport and fire ONCE or TWICE)
-        -- Call this ONLY when the container is NOT considered truly open.
         local function triggerContainerPrompt_Reliable(prompt, containerPart, promptContextName)
             warn("    -- Triggering Container Prompt Reliably:", promptContextName)
             if not (containerPart and containerPart.Parent) then warn("      -- ERROR: Invalid container part."); return end
             if not (prompt and prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Enabled) then warn("      -- ERROR: Invalid or disabled prompt."); return end
-
-            local originalCFrame = character.HumanoidRootPart.CFrame
-            local promptParent = prompt.Parent
-            local targetCFrame
-            if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot()
-            elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame
-            elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame
-            end
-
+            local originalCFrame = character.HumanoidRootPart.CFrame; local promptParent = prompt.Parent; local targetCFrame
+            if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot() elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame end
             if not targetCFrame then warn("      -- ERROR: Could not get target CFrame."); character:PivotTo(originalCFrame); return end
-
-            character:PivotTo(targetCFrame)
-            task.wait(0.07) -- Wait after TP
-            local success1, err1 = pcall(fireproximityprompt, prompt)
-            task.wait(0.08) -- Wait after first fire
-             -- Optional: Fire a second time quickly
-             if prompt and prompt.Parent and prompt.Enabled then
-                 pcall(fireproximityprompt, prompt)
-                 task.wait(0.05)
-             end
-            character:PivotTo(originalCFrame)
-            warn("      -- Finished reliable trigger attempt for:", promptContextName)
+            character:PivotTo(targetCFrame); task.wait(0.07); local success1, err1 = pcall(fireproximityprompt, prompt); task.wait(0.08)
+             if prompt and prompt.Parent and prompt.Enabled then pcall(fireproximityprompt, prompt); task.wait(0.05) end
+            character:PivotTo(originalCFrame); warn("      -- Finished reliable trigger attempt for:", promptContextName)
         end
 
 
@@ -1070,9 +1053,23 @@ LeftGroupBox:AddButton({
         local function findAndLootGold(itemContainer, containerContextName)
             -- warn("  -- [Loot Phase] findAndLootGold called for:", containerContextName, "Part:", itemContainer and itemContainer:GetFullName() or "nil")
             if not itemContainer then warn("    -- ERROR: itemContainer is nil. Aborting loot."); return end
-            local itemParentToSearch = itemContainer; local spawnAreas = itemContainer:FindFirstChild("SpawnAreas") or itemContainer:FindFirstChild("ItemSpawns")
-             if not spawnAreas and itemContainer:FindFirstChild("BaseOutline") then spawnAreas = itemContainer.BaseOutline:FindFirstChild("ItemSpawns") or itemContainer.BaseOutline:FindFirstChild("SpawnAreas") end
-            if spawnAreas then itemParentToSearch = spawnAreas; else end
+
+            local itemParentToSearch = itemContainer
+            local spawnAreas = itemContainer:FindFirstChild("SpawnAreas") or itemContainer:FindFirstChild("ItemSpawns")
+            local baseOutline = itemContainer:FindFirstChild("BaseOutline") -- Find BaseOutline once
+
+            -- Check inside BaseOutline ONLY if spawnAreas not found AND BaseOutline exists
+            if not spawnAreas and baseOutline then
+                 warn("    -- No direct SpawnAreas/ItemSpawns found, checking inside BaseOutline...")
+                 spawnAreas = baseOutline:FindFirstChild("ItemSpawns") or baseOutline:FindFirstChild("SpawnAreas")
+            end
+
+            if spawnAreas then
+                itemParentToSearch = spawnAreas
+                -- warn("    -- Found SpawnAreas/ItemSpawns. Searching within:", itemParentToSearch:GetFullName())
+            -- else warn("    -- No SpawnAreas/ItemSpawns found. Searching directly inside:", itemParentToSearch:GetFullName())
+            end
+
             local potentialItems = itemParentToSearch:GetChildren(); if #potentialItems == 0 then return end
 
             for i, item in ipairs(potentialItems) do
@@ -1132,37 +1129,45 @@ LeftGroupBox:AddButton({
                     local containerModel = child; local modelIndex = overallContainerIndex
                     warn("-- [Open Phase] Processing Container:", containerModel.Name, "#", modelIndex)
                     local containerChildren = containerModel:GetChildren(); local lootPartsToAdd = {}
-                    local needsOpeningTrigger = false -- Default to false
-                    local promptToTrigger = nil
-                    local partToTrigger = nil -- The part associated with the prompt (e.g., MainDrawer, Door)
-                    local innerContainerModel = nil -- The model named "Container" or "OpenedSTORAGE"
+                    local innerContainerModel = nil -- Find this first for name check
 
-                    -- Find the inner container model and the prompt first
+                    -- Find inner container model first (common pattern)
+                    for _, cChild in ipairs(containerChildren) do
+                        if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then
+                            innerContainerModel = cChild
+                            break
+                        end
+                    end
+                    local nameOK = innerContainerModel and innerContainerModel.Name == "OpenedSTORAGE" -- Check name only once if inner model found
+
+                    -- Handle Drawer
                     if containerModel.Name == "Drawer" then
+                        local addedAnyLootPart = false
                         for _, cChild in ipairs(containerChildren) do
                             if (cChild.Name:find("Container", 1, true) or cChild.Name == "OpenedSTORAGE") and cChild.Name ~= "Outside_Container" and cChild:IsA("Model") then
-                                innerContainerModel = cChild -- Found the model to check name
-                                local mainDrawer = innerContainerModel:FindFirstChild("MainDrawer")
+                                -- Use the specific inner model for this drawer part
+                                local currentInnerModel = cChild
+                                local mainDrawer = currentInnerModel:FindFirstChild("MainDrawer")
                                 if mainDrawer then
-                                    partToTrigger = mainDrawer -- Part associated with prompt
-                                    promptToTrigger = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt")
-                                    table.insert(lootPartsToAdd, mainDrawer) -- Add loot part
-                                    -- Check state for *this specific drawer*
-                                    local promptOpenedAttr = promptToTrigger and promptToTrigger:GetAttribute("Opened")
-                                    local isTrulyOpen = (promptOpenedAttr == true and innerContainerModel.Name == "OpenedSTORAGE")
-                                    warn("      -- Drawer", mainDrawer.Name, "Prompt Attr:", tostring(promptOpenedAttr), "Inner Name:", innerContainerModel.Name, "Truly Open:", isTrulyOpen)
-                                    if not isTrulyOpen then
+                                    local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt")
+                                    local promptOpenedAttr = prompt and prompt:GetAttribute("Opened")
+                                    local currentNameOK = currentInnerModel.Name == "OpenedSTORAGE" -- Check name for this specific part
+                                    warn("      -- Drawer", mainDrawer.Name, "Prompt Attr:", tostring(promptOpenedAttr), "Inner Name:", currentInnerModel.Name)
+                                    if not (promptOpenedAttr == true and currentNameOK) and prompt then
                                         warn("        -- Marked for opening trigger.")
-                                        triggerContainerPrompt_Reliable(promptToTrigger, partToTrigger, containerModel.Name .. " Trigger #" .. modelIndex)
-                                    end
+                                        triggerContainerPrompt_Reliable(prompt, mainDrawer, containerModel.Name .. " Trigger #" .. modelIndex)
+                                    elseif not prompt then warn("      -- WARNING: No prompt found for", mainDrawer:GetFullName()) end
+                                    table.insert(lootPartsToAdd, mainDrawer); addedAnyLootPart = true
                                 else warn("    -- ERROR: No MainDrawer in", cChild.Name) end
                             end
                         end
-                        local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) end
+                        local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer); addedAnyLootPart = true end
 
+                    -- Handle Lockers/Crowbars
                     elseif containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
-                         local basePart = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then innerContainerModel = cChild; basePart = innerContainerModel:FindFirstChild("Base"); if basePart then break end end end
+                         local basePart = innerContainerModel and innerContainerModel:FindFirstChild("Base")
                          if basePart then table.insert(lootPartsToAdd, basePart) else warn("    -- WARNING: Could not find Base part for Locker.") end
+                         warn("    -- Locker Inner Name:", innerContainerModel and innerContainerModel.Name or "N/A")
 
                          if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
                              local doorBottom = containerModel:FindFirstChild("DoorBottom"); local doorTop = containerModel:FindFirstChild("DoorTop")
@@ -1170,24 +1175,26 @@ LeftGroupBox:AddButton({
                              local promptT = doorTop and doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt")
                              local pO_B = promptB and promptB:GetAttribute("Opened")
                              local pO_T = promptT and promptT:GetAttribute("Opened")
-                             local nameOK = innerContainerModel and innerContainerModel.Name == "OpenedSTORAGE" -- Check name once
-                             warn("    -- Locker V2 - Bottom Prompt Attr:", tostring(pO_B), "Top Prompt Attr:", tostring(pO_T), "Inner Name:", innerContainerModel and innerContainerModel.Name or "N/A")
+                             warn("      -- Bottom Prompt Attr:", tostring(pO_B), "Top Prompt Attr:", tostring(pO_T))
                              if not (pO_B == true and nameOK) and promptB then warn("        -- Marked Bottom Door for opening trigger."); triggerContainerPrompt_Reliable(promptB, doorBottom, containerModel.Name .. " Bottom Trigger #" .. modelIndex) end
                              if not (pO_T == true and nameOK) and promptT then warn("        -- Marked Top Door for opening trigger."); triggerContainerPrompt_Reliable(promptT, doorTop, containerModel.Name .. " Top Trigger #" .. modelIndex) end
                          else
                              local door = containerModel:FindFirstChild("Door"); local promptD = door and door:FindFirstChild("ProximityPrompt")
-                             if promptD then local pO_D = promptD:GetAttribute("Opened"); local nameOK = innerContainerModel and innerContainerModel.Name == "OpenedSTORAGE"; warn("    -- Single Door Locker - Prompt Attr:", tostring(pO_D), "Inner Name:", innerContainerModel and innerContainerModel.Name or "N/A"); if not (pO_D == true and nameOK) then warn("        -- Marked Single Door for opening trigger."); triggerContainerPrompt_Reliable(promptD, door, containerModel.Name .. " Trigger #" .. modelIndex) end else warn("    -- WARNING: No prompt for Single Door.") end
+                             if promptD then local pO_D = promptD:GetAttribute("Opened"); warn("      -- Single Door Prompt Attr:", tostring(pO_D)); if not (pO_D == true and nameOK) then warn("        -- Marked Single Door for opening trigger."); triggerContainerPrompt_Reliable(promptD, door, containerModel.Name .. " Trigger #" .. modelIndex) end else warn("    -- WARNING: No prompt for Single Door.") end
                          end
 
+                    -- Handle Rolltop
                     elseif containerModel.Name == "Rolltop" then
-                         local mainDrawerRef = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then innerContainerModel = cChild; mainDrawerRef = innerContainerModel:FindFirstChild("MainDrawer"); if mainDrawerRef then break end end end
-                         if mainDrawerRef then local pA = mainDrawerRef:FindFirstChild("ProxAttach"); promptToTrigger = pA and pA:FindFirstChild("ProximityPrompt"); if promptToTrigger then local pO = promptToTrigger:GetAttribute("Opened"); local nameOK = innerContainerModel.Name == "OpenedSTORAGE"; warn("    -- Rolltop - Prompt Attr:", tostring(pO), "Inner Name:", innerContainerModel.Name); if not (pO == true and nameOK) then warn("        -- Marked Rolltop for opening trigger."); triggerContainerPrompt_Reliable(promptToTrigger, mainDrawerRef, "Rolltop Trigger #" .. modelIndex) end else warn("    -- WARNING: No prompt/ProxAttach for Rolltop MainDrawer.") end; table.insert(lootPartsToAdd, mainDrawerRef) else warn("    -- WARNING: Could not find MainDrawer for Rolltop.") end
+                         local mainDrawerRef = innerContainerModel and innerContainerModel:FindFirstChild("MainDrawer")
+                         if mainDrawerRef then local pA = mainDrawerRef:FindFirstChild("ProxAttach"); local promptR = pA and pA:FindFirstChild("ProximityPrompt"); if promptR then local pO = promptR:GetAttribute("Opened"); warn("    -- Rolltop - Prompt Attr:", tostring(pO), "Inner Name:", innerContainerModel.Name); if not (pO == true and nameOK) then warn("        -- Marked Rolltop for opening trigger."); triggerContainerPrompt_Reliable(promptR, mainDrawerRef, "Rolltop Trigger #" .. modelIndex) end else warn("    -- WARNING: No prompt/ProxAttach for Rolltop MainDrawer.") end; table.insert(lootPartsToAdd, mainDrawerRef) else warn("    -- WARNING: Could not find MainDrawer for Rolltop.") end
                          local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) end
 
+                    -- Handle ToolBox
                     elseif containerModel.Name == "ToolBox" then
-                         local spawnAreasRef = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then innerContainerModel = cChild; break end end
-                         if innerContainerModel then promptToTrigger = containerModel:FindFirstChild("ProximityPrompt"); if promptToTrigger then local pO = promptToTrigger:GetAttribute("Opened"); local nameOK = innerContainerModel.Name == "OpenedSTORAGE"; warn("    -- ToolBox - Prompt Attr:", tostring(pO), "Inner Name:", innerContainerModel.Name); if not (pO == true and nameOK) then warn("        -- Marked ToolBox for opening trigger."); triggerContainerPrompt_Reliable(promptToTrigger, innerContainerModel, "ToolBox Trigger #" .. modelIndex) end else warn("    -- WARNING: No prompt for ToolBox.") end; local baseRef = innerContainerRef:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox Base found, but no SpawnAreas.") end else warn("    -- WARNING: ToolBox InnerContainer found, but no Base.") end else warn("    -- WARNING: Could not find InnerContainer for ToolBox.") end
+                         local spawnAreasRef = nil
+                         if innerContainerModel then local promptTB = containerModel:FindFirstChild("ProximityPrompt"); if promptTB then local pO = promptTB:GetAttribute("Opened"); warn("    -- ToolBox - Prompt Attr:", tostring(pO), "Inner Name:", innerContainerModel.Name); if not (pO == true and nameOK) then warn("        -- Marked ToolBox for opening trigger."); triggerContainerPrompt_Reliable(promptTB, innerContainerModel, "ToolBox Trigger #" .. modelIndex) end else warn("    -- WARNING: No prompt for ToolBox.") end; local baseRef = innerContainerModel:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox Base found, but no SpawnAreas.") end else warn("    -- WARNING: ToolBox InnerContainer found, but no Base.") end else warn("    -- WARNING: Could not find InnerContainer for ToolBox.") end
 
+                    -- Handle Tables
                     elseif containerModel.Name:find("Table") then
                          local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) end
                     end
