@@ -990,7 +990,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "2.13-LockerLootFix" -- Updated version number
+local AutoLootVersion = "2.14-LockerDebug" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
@@ -1049,35 +1049,40 @@ LeftGroupBox:AddButton({
         end
 
 
-        -- SIMPLIFIED: Function to find and loot gold within a specific container part
+        -- ADDED LOGS: Function to find and loot gold
         local function findAndLootGold(itemContainer, containerContextName)
-            -- warn("  -- [Loot Phase] findAndLootGold called for:", containerContextName, "Part:", itemContainer and itemContainer:GetFullName() or "nil")
+            warn("  -- [Loot Phase] findAndLootGold called for:", containerContextName, "Part:", itemContainer and itemContainer:GetFullName() or "nil")
             if not itemContainer then warn("    -- ERROR: itemContainer is nil. Aborting loot."); return end
 
             local itemParentToSearch = itemContainer -- Default search location
-            -- Try to find specific spawn folders inside the container part
             local spawnFolder = itemContainer:FindFirstChild("ItemSpawns") or itemContainer:FindFirstChild("SpawnAreas")
 
             if spawnFolder then
-                itemParentToSearch = spawnFolder -- Search inside the folder if found
-                -- warn("    -- Found SpawnAreas/ItemSpawns. Searching within:", itemParentToSearch:GetFullName())
-            -- else warn("    -- No SpawnAreas/ItemSpawns found. Searching directly inside:", itemParentToSearch:GetFullName())
+                itemParentToSearch = spawnFolder
+                warn("    -- Found Spawn Folder:", spawnFolder:GetFullName(), ". Searching inside.")
+            else
+                warn("    -- No Spawn Folder (ItemSpawns/SpawnAreas) found directly in", itemContainer:GetFullName(), ". Searching directly inside it.")
             end
 
-            -- Check if itemParentToSearch is valid before getting children
             if not itemParentToSearch or not itemParentToSearch.Parent then
-                 warn("    -- ERROR: Invalid itemParentToSearch for", containerContextName); return
+                 warn("    -- ERROR: Invalid itemParentToSearch:", itemParentToSearch and itemParentToSearch:GetFullName() or "nil"); return
             end
+            warn("    -- Final Search Target:", itemParentToSearch:GetFullName())
 
-            local potentialItems = itemParentToSearch:GetChildren(); if #potentialItems == 0 then return end
+            local potentialItems = itemParentToSearch:GetChildren()
+            warn("    -- Found", #potentialItems, "potential items inside search target.")
+            if #potentialItems == 0 then return end
 
             for i, item in ipairs(potentialItems) do
                 local itemModel = item
-                if not (itemModel and itemModel.Parent) then continue end
+                if not (itemModel and itemModel.Parent) then warn("      -- Skipping item #", i, "(invalid)"); continue end
+                warn("      -- Checking item #", i, ":", itemModel.Name, "(Class:", itemModel.ClassName, ") Full Path:", itemModel:GetFullName()) -- Log full path
 
                 if table.find(goldItemNames, itemModel.Name) then
+                    warn("        -- MATCH! Found gold item:", itemModel.Name)
                     local itemPrompt = itemModel:FindFirstChild("ItemPrompt")
                     if itemPrompt then
+                        warn("          -- Found ItemPrompt:", itemPrompt:GetFullName())
                         local lootedThisItem = false
                         if useFastMode then
                             -- warn("        -- Fast Mode: Attempting BRIEF direct fire for GOLD:", itemModel.Name)
@@ -1108,6 +1113,7 @@ LeftGroupBox:AddButton({
                     else warn("        -- ERROR: Could not find ItemPrompt inside gold item:", itemModel.Name) end
                 end
             end
+             warn("  -- [Loot Phase] Finished searching in:", containerContextName)
         end -- End of findAndLootGold function
 
         -- =============================================================
@@ -1137,14 +1143,28 @@ LeftGroupBox:AddButton({
                             break
                         end
                     end
+                    -- If no inner container found directly, check children like 'Door' or 'MainDrawer' parents
+                    if not innerContainerModel then
+                         for _, cChild in ipairs(containerChildren) do
+                              if cChild.Name == "Door" or cChild.Name == "DoorBottom" or cChild.Name == "DoorTop" or cChild.Name == "MainDrawer" then
+                                   if cChild.Parent:IsA("Model") and (cChild.Parent.Name == "Container" or cChild.Parent.Name == "OpenedSTORAGE") then
+                                        innerContainerModel = cChild.Parent
+                                        warn("      -- Found inner container via part parent:", innerContainerModel:GetFullName())
+                                        break
+                                   end
+                              end
+                         end
+                    end
+
                     local nameOK = innerContainerModel and innerContainerModel.Name == "OpenedSTORAGE"
+                    if not innerContainerModel then warn("    -- WARNING: Could not find 'Container' or 'OpenedSTORAGE' model inside", containerModel.Name) end
 
                     -- Handle Drawer
                     if containerModel.Name == "Drawer" then
                         local addedAnyLootPart = false
                         for _, cChild in ipairs(containerChildren) do
                             if cChild:IsA("Model") and (cChild.Name:find("Container", 1, true) or cChild.Name == "OpenedSTORAGE") and cChild.Name ~= "Outside_Container" then
-                                local currentInnerModel = cChild -- Use specific inner model
+                                local currentInnerModel = cChild
                                 local mainDrawer = currentInnerModel:FindFirstChild("MainDrawer")
                                 if mainDrawer then
                                     local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt")
