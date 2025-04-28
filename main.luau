@@ -989,12 +989,12 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "2.1-Debug" -- Updated version number for Debugging
+local AutoLootVersion = "2.1-DebugFix" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
         Library:Notify("Auto Loot Gold Started (v" .. AutoLootVersion .. ") - DEBUG ENABLED", 1)
-        warn("--- Auto Loot Gold (v" .. AutoLootVersion .. ") Started ---") -- Console log start
+        warn("--- Auto Loot Gold (v" .. AutoLootVersion .. ") Started ---")
 
         local player = Players.LocalPlayer
         local character = player.Character
@@ -1023,7 +1023,7 @@ LeftGroupBox:AddButton({
         local partsToLootAfterOpening = {}
         local overallContainerIndex = 0
 
-        -- Function to try looting an item (unchanged, added basic logs)
+        -- Function to try looting an item (unchanged from 2.0)
         local function tryFirePromptForItem(itemPromptRef, itemModel, itemContextName)
              warn("  -- tryFirePromptForItem called for:", itemContextName)
              if not (itemModel and itemModel.Parent) then
@@ -1038,7 +1038,31 @@ LeftGroupBox:AddButton({
              local firstAttempt = true
 
              while itemModel and itemModel.Parent and (tick() - startTime < maxLoopTime) do
-                 -- [...] (rest of the function is unchanged)
+                 if firstAttempt then
+                     task.wait(0.1)
+                     firstAttempt = false
+                 end
+                 local currentItemPrompt = itemModel:FindFirstChild("ItemPrompt")
+                 if currentItemPrompt and currentItemPrompt:IsA("ProximityPrompt") and currentItemPrompt.Enabled then
+                     local promptParent = currentItemPrompt.Parent
+                     if not promptParent then break end
+                     local targetCFrame
+                     if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot()
+                     elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame
+                     end
+                     if targetCFrame then
+                         character:PivotTo(targetCFrame)
+                         task.wait(0.05)
+                         local success, err = pcall(fireproximityprompt, currentItemPrompt)
+                         task.wait(0.07)
+                         if not itemModel or not itemModel.Parent then
+                             looted = true
+                             break
+                         end
+                     end
+                 end
+                 attempts = attempts + 1
+                 task.wait(0.1)
              end
              character:PivotTo(originalCFrame)
              if not itemModel or not itemModel.Parent then looted = true
@@ -1050,9 +1074,9 @@ LeftGroupBox:AddButton({
              return looted
         end
 
-        -- Function to attempt opening a container (ONLY call if attribute check shows it's closed)
+        -- Function to attempt opening a container (unchanged from 2.0)
         local function tryOpenContainer_Phase1(prompt, containerPart, promptContextName)
-            warn("  -- tryOpenContainer_Phase1 called for:", promptContextName) -- Log entry
+            warn("  -- tryOpenContainer_Phase1 called for:", promptContextName)
             local finalResult = { opened = false }
 
             if not (containerPart and containerPart.Parent) then warn("    -- ERROR: Invalid container part. Returning false."); return finalResult end
@@ -1068,16 +1092,35 @@ LeftGroupBox:AddButton({
             local originalCFrame = character.HumanoidRootPart.CFrame
 
             while attempts < maxAttempts do
-                -- [...] (rest of the loop is unchanged)
-                 local currentOpenState = containerPart:GetAttribute("Open") -- Check attribute after firing
-                 warn("      -- Attempt", attempts + 1, "- Fired prompt. Checked 'Open' attribute:", currentOpenState) -- Log check result
+                 if not (prompt and prompt.Parent and prompt.Enabled) then
+                     warn("      -- Prompt for", promptContextName, "became invalid or disabled during open attempt.")
+                     break
+                 end
+
+                 local promptParent = prompt.Parent
+                 local targetCFrame
+                 if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot()
+                 elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame
+                 elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame
+                 end
+
+                 if not targetCFrame then warn("      -- ERROR: Could not get target CFrame for", promptContextName); break end
+
+                 character:PivotTo(targetCFrame)
+                 task.wait(0.07)
+
+                 local success, err = pcall(fireproximityprompt, prompt)
+                 task.wait(0.1)
+
+                 local currentOpenState = containerPart:GetAttribute("Open")
+                 warn("      -- Attempt", attempts + 1, "- Fired prompt. Checked 'Open' attribute:", currentOpenState)
                  if currentOpenState == true then
                      openedInLoop = true
                      warn("      -- Successfully opened in loop.")
                      break
                  end
                  attempts = attempts + 1
-                 -- [...]
+                 if not disableMicroWaits then task.wait(0.05) end
             end
 
             character:PivotTo(originalCFrame)
@@ -1087,11 +1130,11 @@ LeftGroupBox:AddButton({
             end
 
             finalResult.opened = openedInLoop
-            warn("  -- tryOpenContainer_Phase1 result for", promptContextName, ":", openedInLoop) -- Log exit
+            warn("  -- tryOpenContainer_Phase1 result for", promptContextName, ":", openedInLoop)
             return finalResult
         end
 
-        -- Function to find and loot gold within a specific container part (added more logs)
+        -- Function to find and loot gold within a specific container part (unchanged from 2.0)
         local function findAndLootGold(itemContainer, containerContextName)
             warn("  -- [Loot Phase] findAndLootGold called for:", containerContextName, "Part:", itemContainer and itemContainer:GetFullName() or "nil")
             if not itemContainer then warn("    -- ERROR: itemContainer is nil. Aborting loot."); return end
@@ -1135,8 +1178,6 @@ LeftGroupBox:AddButton({
                     else
                         warn("          -- ERROR: Could not find ItemPrompt inside gold item:", item.Name)
                     end
-                -- else -- No need to log non-matches unless debugging item spawning itself
-                --    warn("        -- No match (not gold).")
                 end
             end
              warn("  -- [Loot Phase] Finished searching in:", containerContextName)
@@ -1151,7 +1192,6 @@ LeftGroupBox:AddButton({
         -- Recursive function to process items (Models, Folders)
         local function processItemForOpening(item)
             if not item or not item.Parent then return end
-            -- warn("DEBUG: Processing children of:", item:GetFullName()) -- Can be noisy, enable if needed
 
             local children = item:GetChildren()
             for _, child in ipairs(children) do
@@ -1173,7 +1213,7 @@ LeftGroupBox:AddButton({
                     local lootPartsToAdd = {}
                     local openedOrFoundOpen = false
 
-                    -- Handle Drawer (ADDED DETAILED LOGS AND NOTIFY)
+                    -- Handle Drawer (FIXED GetName -> .Name)
                     if containerModel.Name == "Drawer" then
                         local addedAnyLootPart = false
                         warn("  -- Handling Drawer Model...")
@@ -1183,8 +1223,9 @@ LeftGroupBox:AddButton({
                                 if mainDrawer then
                                     warn("    -- Found potential drawer part:", cChild.Name, "-> MainDrawer:", mainDrawer:GetFullName())
                                     local isAlreadyOpen = mainDrawer:GetAttribute("Open")
-                                    warn("      -- Checking 'Open' attribute for", mainDrawer:GetName(), ":", isAlreadyOpen) -- LOG ATTRIBUTE
-                                    Library:Notify(string.format("Drawer %s (%s) Open Attr: %s", containerModel.Name, mainDrawer:GetName(), tostring(isAlreadyOpen)), 1) -- NOTIFY STATE
+                                    -- FIXED HERE: Use .Name instead of :GetName()
+                                    warn("      -- Checking 'Open' attribute for", mainDrawer.Name, ":", isAlreadyOpen)
+                                    Library:Notify(string.format("Drawer %s (%s) Open Attr: %s", containerModel.Name, mainDrawer.Name, tostring(isAlreadyOpen)), 1)
 
                                     local openedThisCheck = false
                                     if isAlreadyOpen == true then
@@ -1197,7 +1238,8 @@ LeftGroupBox:AddButton({
                                             local prompt = proxAttach:FindFirstChild("ProximityPrompt")
                                             if prompt then
                                                  warn("        -- Found prompt. Attempting to open...")
-                                                 Library:Notify(string.format("Attempting to open Drawer %s (%s)", containerModel.Name, mainDrawer:GetName()), 1) -- NOTIFY ATTEMPT
+                                                 -- FIXED HERE: Use .Name instead of :GetName()
+                                                 Library:Notify(string.format("Attempting to open Drawer %s (%s)", containerModel.Name, mainDrawer.Name), 1)
                                                  if tryOpenContainer_Phase1(prompt, mainDrawer, cChild.Name .. " Prompt #" .. modelIndex).opened then
                                                      openedThisCheck = true
                                                      warn("        -- Successfully opened via prompt.")
@@ -1213,7 +1255,7 @@ LeftGroupBox:AddButton({
                                     end
 
                                     if openedThisCheck then
-                                        warn("      -- Drawer confirmed OPEN (either initially or after attempt). Adding to loot list:", mainDrawer:GetFullName())
+                                        warn("      -- Drawer confirmed OPEN. Adding to loot list:", mainDrawer:GetFullName())
                                         table.insert(lootPartsToAdd, mainDrawer)
                                         addedAnyLootPart = true
                                     else
@@ -1233,11 +1275,9 @@ LeftGroupBox:AddButton({
                         openedOrFoundOpen = addedAnyLootPart
                         warn("  -- Finished handling Drawer Model. Opened/Found Open:", openedOrFoundOpen)
 
-                    -- Handle Lockers/Crowbars (Add similar attribute check logs if needed)
+                    -- Handle Lockers/Crowbars (Unchanged from 2.0)
                     elseif containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
                          warn("  -- Handling Locker/Crowbar Model...")
-                         -- [[ Add detailed attribute checks and logs here similar to Drawer if lockers are also problematic ]]
-                         -- Simplified version for now:
                          local basePart = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then basePart = cChild:FindFirstChild("Base"); if basePart then break end end end
                          if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
                              local doorBottom = containerModel:FindFirstChild("DoorBottom"); local doorTop = containerModel:FindFirstChild("DoorTop"); local bottomOpen = false; local topOpen = false
@@ -1250,25 +1290,23 @@ LeftGroupBox:AddButton({
                          if openedOrFoundOpen and basePart then table.insert(lootPartsToAdd, basePart) elseif openedOrFoundOpen and not basePart then warn("    -- WARNING: Locker open but no Base found.") end
                          warn("  -- Finished handling Locker/Crowbar Model. Opened/Found Open:", openedOrFoundOpen)
 
-                    -- Handle Rolltop (Add similar attribute check logs if needed)
+                    -- Handle Rolltop (Unchanged from 2.0)
                     elseif containerModel.Name == "Rolltop" then
                          warn("  -- Handling Rolltop Model...")
-                         -- [[ Add detailed attribute checks and logs here similar to Drawer if rolltops are also problematic ]]
                          local mainDrawerRef = nil; local addedAnyLootPart = false; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then mainDrawerRef = cChild:FindFirstChild("MainDrawer"); if mainDrawerRef then break end end end
                          if mainDrawerRef then local isROpen = mainDrawerRef:GetAttribute("Open"); warn("    -- MainDrawer Open Attr:", isROpen); local openedThisCheck = false; if isROpen == true then openedThisCheck = true else local pA = mainDrawerRef:FindFirstChild("ProxAttach"); if pA then local pR = pA:FindFirstChild("ProximityPrompt"); if tryOpenContainer_Phase1(pR, mainDrawerRef, "Rolltop Prompt #" .. modelIndex).opened then openedThisCheck = true end end end; if openedThisCheck then table.insert(lootPartsToAdd, mainDrawerRef); addedAnyLootPart = true end end
                          local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer); addedAnyLootPart = true end
                          openedOrFoundOpen = addedAnyLootPart
                          warn("  -- Finished handling Rolltop Model. Opened/Found Open:", openedOrFoundOpen)
 
-                    -- Handle ToolBox (Add similar attribute check logs if needed)
+                    -- Handle ToolBox (Unchanged from 2.0)
                     elseif containerModel.Name == "ToolBox" then
                          warn("  -- Handling ToolBox Model...")
-                         -- [[ Add detailed attribute checks and logs here similar to Drawer if toolboxes are also problematic ]]
                          local innerContainerRef = nil; local spawnAreasRef = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then innerContainerRef = cChild; break end end
                          if innerContainerRef then local isTBOpen = innerContainerRef:GetAttribute("Open"); warn("    -- InnerContainer Open Attr:", isTBOpen); local openedThisCheck = false; if isTBOpen == true then openedThisCheck = true else local pTB = containerModel:FindFirstChild("ProximityPrompt"); if pTB then if tryOpenContainer_Phase1(pTB, innerContainerRef, "ToolBox Prompt #" .. modelIndex).opened then openedThisCheck = true end end end; if openedThisCheck then openedOrFoundOpen = true; local baseRef = innerContainerRef:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox open, no SpawnAreas.") end else warn("    -- WARNING: ToolBox open, no Base.") end end end
                          warn("  -- Finished handling ToolBox Model. Opened/Found Open:", openedOrFoundOpen)
 
-                    -- Handle Tables
+                    -- Handle Tables (Unchanged from 2.0)
                     elseif containerModel.Name:find("Table") then
                          warn("  -- Handling Table Model...")
                          local outsideContainer = containerModel:FindFirstChild("Outside_Container")
@@ -1280,7 +1318,7 @@ LeftGroupBox:AddButton({
                          warn("  -- Finished handling Table Model. Opened/Found Open:", openedOrFoundOpen)
                     end
 
-                    -- Add identified loot parts
+                    -- Add identified loot parts (Unchanged from 2.0)
                     if openedOrFoundOpen and #lootPartsToAdd > 0 then
                         warn("    -- FINAL CHECK: Container", containerModel.Name, "is open. Adding", #lootPartsToAdd, "part(s) to main loot list.")
                         for _, part in ipairs(lootPartsToAdd) do
@@ -1297,12 +1335,12 @@ LeftGroupBox:AddButton({
                          warn("    -- FINAL CHECK: Container", containerModel.Name, "remains closed or no loot parts found.")
                     end
 
-                -- Case 2: AddedAssets Folder
+                -- Case 2: AddedAssets Folder (Unchanged from 2.0)
                 elseif child.Name == "AddedAssets" and child:IsA("Folder") then
                     warn("  -- Descending into Folder:", child:GetFullName())
                     processItemForOpening(child) -- Recurse
 
-                -- Case 3: SideRoom Model (if enabled)
+                -- Case 3: SideRoom Model (if enabled) (Unchanged from 2.0)
                 elseif lootSideRooms and child.Name == "SideRoom" and child:IsA("Model") then
                     warn("  -- Descending into SideRoom Model:", child:GetFullName())
                     processItemForOpening(child) -- Recurse
@@ -1313,7 +1351,7 @@ LeftGroupBox:AddButton({
             end -- End of children loop
         end -- End of processItemForOpening function
 
-        -- Start the recursive processing from the current room
+        -- Start the recursive processing from the current room (Unchanged from 2.0)
         warn("--- Starting Phase 1 Recursive Processing ---")
         processItemForOpening(currentRoomModel)
         warn("--- Finished Phase 1 Recursive Processing ---")
@@ -1326,9 +1364,7 @@ LeftGroupBox:AddButton({
              end
         end
 
-        -- =============================================================
-        -- Intermediate Step: Global Wait
-        -- =============================================================
+        -- Intermediate Step: Global Wait (Unchanged from 2.0)
         if lootWaitTime > 0 and #partsToLootAfterOpening > 0 then
             warn("\n--- Performing global wait for", lootWaitTime, "seconds... ---")
             task.wait(lootWaitTime)
@@ -1338,9 +1374,7 @@ LeftGroupBox:AddButton({
              warn("\n--- Loot wait time is 0. Proceeding directly to Loot Phase. ---")
         end
 
-        -- =============================================================
-        -- Phase 2: Loot Gold from Identified Locations
-        -- =============================================================
+        -- Phase 2: Loot Gold from Identified Locations (Unchanged from 2.0)
         if #partsToLootAfterOpening > 0 then
             warn("\n--- Starting Phase 2: Looting Gold ---")
             local uniquePartsLooted = {}
@@ -1367,9 +1401,7 @@ LeftGroupBox:AddButton({
             warn("--- Finished Phase 2: Looting Gold ---")
         end
 
-        -- =============================================================
-        -- Final Notification
-        -- =============================================================
+        -- Final Notification (Unchanged from 2.0)
         warn("--- Auto Loot Gold Finished ---")
         Library:Notify("Auto Loot Gold Finished (v" .. AutoLootVersion .. "). Looted " .. itemsLootedCount .. " gold items.", 3)
 
