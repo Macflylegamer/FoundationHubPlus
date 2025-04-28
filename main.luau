@@ -966,7 +966,7 @@ LeftGroupBox:AddToggle("LootSideRooms", {
 })
 
 LeftGroupBox:AddToggle("UseFastModeToggle", {
-    Text = "Use Fast Gold Loot (No TP First - Risky)", -- Text reflects only gold optimization
+    Text = "Use Fast Gold Loot (No TP First - Risky)",
     Default = useFastMode,
     Callback = function(Value)
         useFastMode = Value
@@ -990,7 +990,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "2.16-FinalStateCheck" -- Updated version number
+local AutoLootVersion = "2.17-MultiDrawerFix" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
@@ -1054,17 +1054,23 @@ LeftGroupBox:AddButton({
             -- [...] (Function unchanged from 2.14)
              if not itemContainer then warn("    -- ERROR: itemContainer is nil. Aborting loot."); return end
              local itemParentToSearch = itemContainer; local spawnFolder = itemContainer:FindFirstChild("ItemSpawns") or itemContainer:FindFirstChild("SpawnAreas")
-             if spawnFolder then itemParentToSearch = spawnFolder; warn("    -- Found Spawn Folder:", spawnFolder:GetFullName(), ". Searching inside.") else warn("    -- No Spawn Folder found directly in", itemContainer:GetFullName(), ". Searching directly inside it.") end
+             if spawnFolder then itemParentToSearch = spawnFolder; -- warn("    -- Found Spawn Folder:", spawnFolder:GetFullName(), ". Searching inside.")
+             -- else warn("    -- No Spawn Folder found directly in", itemContainer:GetFullName(), ". Searching directly inside it.")
+             end
              if not itemParentToSearch or not itemParentToSearch.Parent then warn("    -- ERROR: Invalid itemParentToSearch:", itemParentToSearch and itemParentToSearch:GetFullName() or "nil"); return end
-             warn("    -- Final Search Target:", itemParentToSearch:GetFullName())
-             local potentialItems = itemParentToSearch:GetChildren(); warn("    -- Found", #potentialItems, "potential items inside search target."); if #potentialItems == 0 then return end
+             -- warn("    -- Final Search Target:", itemParentToSearch:GetFullName())
+             local potentialItems = itemParentToSearch:GetChildren(); -- warn("    -- Found", #potentialItems, "potential items inside search target.");
+             if #potentialItems == 0 then return end
              for i, item in ipairs(potentialItems) do
-                 local itemModel = item; if not (itemModel and itemModel.Parent) then warn("      -- Skipping item #", i, "(invalid)"); continue end
-                 warn("      -- Checking item #", i, ":", itemModel.Name, "(Class:", itemModel.ClassName, ") Full Path:", itemModel:GetFullName())
+                 local itemModel = item; if not (itemModel and itemModel.Parent) then -- warn("      -- Skipping item #", i, "(invalid)");
+                 continue end
+                 -- warn("      -- Checking item #", i, ":", itemModel.Name, "(Class:", itemModel.ClassName, ") Full Path:", itemModel:GetFullName())
                  if table.find(goldItemNames, itemModel.Name) then
-                     warn("        -- MATCH! Found gold item:", itemModel.Name); local itemPrompt = itemModel:FindFirstChild("ItemPrompt")
+                     -- warn("        -- MATCH! Found gold item:", itemModel.Name);
+                     local itemPrompt = itemModel:FindFirstChild("ItemPrompt")
                      if itemPrompt then
-                         warn("          -- Found ItemPrompt:", itemPrompt:GetFullName()); local lootedThisItem = false
+                         -- warn("          -- Found ItemPrompt:", itemPrompt:GetFullName());
+                         local lootedThisItem = false
                          if useFastMode then
                              local fastAttempts = 0; local maxFastAttempts = 3
                              while fastAttempts < maxFastAttempts do if not (itemModel and itemModel.Parent) then lootedThisItem = true; break end; if not (itemPrompt and itemPrompt.Parent and itemPrompt.Enabled) then warn("      -- Gold Prompt became invalid during fast loot attempt."); break end; pcall(fireproximityprompt, itemPrompt); task.wait(0.05); fastAttempts = fastAttempts + 1 end
@@ -1074,7 +1080,7 @@ LeftGroupBox:AddButton({
                      else warn("        -- ERROR: Could not find ItemPrompt inside gold item:", itemModel.Name) end
                  end
              end
-              warn("  -- [Loot Phase] Finished searching in:", containerContextName)
+              -- warn("  -- [Loot Phase] Finished searching in:", containerContextName)
         end -- End of findAndLootGold function
 
         -- =============================================================
@@ -1096,7 +1102,7 @@ LeftGroupBox:AddButton({
                     warn("-- [Open Phase] Processing Container:", containerModel.Name, "#", modelIndex)
                     local containerChildren = containerModel:GetChildren(); local lootPartsToAdd = {}
 
-                    -- *** NEW: Centralized logic to check state and trigger ***
+                    -- *** MODIFIED: Centralized logic to check state and trigger ***
                     local function checkAndTrigger(promptRef, innerModelRef, partForTrigger, context)
                         local promptOpenedAttr = promptRef and promptRef:GetAttribute("Opened")
                         local nameOK = innerModelRef and innerModelRef.Name == "OpenedSTORAGE"
@@ -1110,39 +1116,33 @@ LeftGroupBox:AddButton({
                         end
                     end
 
-                    -- Find inner container model(s) and loot parts first
-                    local innerModels = {}
-                    for _, cChild in ipairs(containerChildren) do
-                        if cChild:IsA("Model") and (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") then
-                            table.insert(innerModels, cChild)
-                        end
-                        -- Identify potential loot parts regardless of inner model structure
-                        if containerModel.Name == "Drawer" and cChild:IsA("Model") and cChild.Name ~= "Outside_Container" then
-                             local md = cChild:FindFirstChild("MainDrawer"); if md then table.insert(lootPartsToAdd, md) end
-                        elseif (containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant")) and cChild:IsA("Model") then
-                             local b = cChild:FindFirstChild("Base"); if b then table.insert(lootPartsToAdd, b) end
-                        elseif containerModel.Name == "Rolltop" and cChild:IsA("Model") then
-                             local md = cChild:FindFirstChild("MainDrawer"); if md then table.insert(lootPartsToAdd, md) end
-                        elseif containerModel.Name == "ToolBox" and cChild:IsA("Model") then
-                             local b = cChild:FindFirstChild("Base"); if b then local sa = b:FindFirstChild("SpawnAreas"); if sa then table.insert(lootPartsToAdd, sa) end end
-                        end
-                    end
-                    -- Add Outside_Container if applicable
-                    if containerModel.Name == "Drawer" or containerModel.Name == "Rolltop" or containerModel.Name:find("Table") then
-                         local oc = containerModel:FindFirstChild("Outside_Container"); if oc then table.insert(lootPartsToAdd, oc) end
-                    end
-
-                    -- Now, check state and trigger based on container type
+                    -- *** MODIFIED: Handle Drawers - Iterate through ALL potential inner models ***
                     if containerModel.Name == "Drawer" then
-                        for _, innerModel in ipairs(innerModels) do -- Check each inner model for drawers
-                            local mainDrawer = innerModel:FindFirstChild("MainDrawer")
-                            if mainDrawer then
-                                local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt")
-                                checkAndTrigger(prompt, innerModel, mainDrawer, "Drawer." .. innerModel.Name)
+                        local addedAnyLootPart = false
+                        for _, cChild in ipairs(containerChildren) do -- Iterate through ALL children
+                            -- Check if this child is a drawer mechanism
+                            if cChild:IsA("Model") and (cChild.Name:find("Container", 1, true) or cChild.Name == "OpenedSTORAGE") and cChild.Name ~= "Outside_Container" then
+                                local currentInnerModel = cChild -- This is the Container/Container2/OpenedSTORAGE model
+                                local mainDrawer = currentInnerModel:FindFirstChild("MainDrawer")
+                                if mainDrawer then
+                                    -- Find the prompt specific to this drawer
+                                    local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt")
+                                    -- Check the state for THIS drawer and trigger if needed
+                                    checkAndTrigger(prompt, currentInnerModel, mainDrawer, "Drawer." .. currentInnerModel.Name)
+                                    -- Always add this MainDrawer to the potential loot list
+                                    table.insert(lootPartsToAdd, mainDrawer); addedAnyLootPart = true
+                                else warn("    -- ERROR: No MainDrawer in", cChild:GetFullName()) end
                             end
                         end
+                        -- Handle Outside_Container separately after checking all inner drawers
+                        local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer); addedAnyLootPart = true end
+
+                    -- Handle other container types (Logic largely unchanged, but uses checkAndTrigger)
                     elseif containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
-                         local innerModelRef = #innerModels > 0 and innerModels[1] or nil -- Use first found inner model for name check
+                         local innerModelRef = nil; for _, cChild in ipairs(containerChildren) do if cChild:IsA("Model") and (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") then innerModelRef = cChild; break end end
+                         local basePart = innerModelRef and innerModelRef:FindFirstChild("Base")
+                         if basePart then table.insert(lootPartsToAdd, basePart) else warn("    -- WARNING: Could not find Base part for Locker.") end
+
                          if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
                              local doorBottom = containerModel:FindFirstChild("DoorBottom"); local promptB = doorBottom and doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt")
                              local doorTop = containerModel:FindFirstChild("DoorTop"); local promptT = doorTop and doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt")
@@ -1152,16 +1152,20 @@ LeftGroupBox:AddButton({
                              local door = containerModel:FindFirstChild("Door"); local promptD = door and door:FindFirstChild("ProximityPrompt")
                              checkAndTrigger(promptD, innerModelRef, door, "Locker Single Door")
                          end
+
                     elseif containerModel.Name == "Rolltop" then
-                         local innerModelRef = #innerModels > 0 and innerModels[1] or nil
+                         local innerModelRef = nil; for _, cChild in ipairs(containerChildren) do if cChild:IsA("Model") and (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") then innerModelRef = cChild; break end end
                          local mainDrawerRef = innerModelRef and innerModelRef:FindFirstChild("MainDrawer")
-                         if mainDrawerRef then local pA = mainDrawerRef:FindFirstChild("ProxAttach"); local promptR = pA and pA:FindFirstChild("ProximityPrompt"); checkAndTrigger(promptR, innerModelRef, mainDrawerRef, "Rolltop MainDrawer") else warn("    -- WARNING: Could not find MainDrawer for Rolltop state check.") end
+                         if mainDrawerRef then local pA = mainDrawerRef:FindFirstChild("ProxAttach"); local promptR = pA and pA:FindFirstChild("ProximityPrompt"); checkAndTrigger(promptR, innerModelRef, mainDrawerRef, "Rolltop MainDrawer"); table.insert(lootPartsToAdd, mainDrawerRef) else warn("    -- WARNING: Could not find MainDrawer for Rolltop.") end
+                         local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) end
+
                     elseif containerModel.Name == "ToolBox" then
-                         local innerModelRef = #innerModels > 0 and innerModels[1] or nil
-                         local promptTB = containerModel:FindFirstChild("ProximityPrompt")
-                         checkAndTrigger(promptTB, innerModelRef, innerModelRef or containerModel, "ToolBox") -- Use innerModel for part context if found
+                         local innerModelRef = nil; local spawnAreasRef = nil; for _, cChild in ipairs(containerChildren) do if cChild:IsA("Model") and (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") then innerModelRef = cChild; break end end
+                         if innerModelRef then local promptTB = containerModel:FindFirstChild("ProximityPrompt"); checkAndTrigger(promptTB, innerModelRef, innerModelRef or containerModel, "ToolBox"); local baseRef = innerModelRef:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox Base found, but no SpawnAreas.") end else warn("    -- WARNING: ToolBox InnerContainer found, but no Base.") end else warn("    -- WARNING: Could not find InnerContainer for ToolBox.") end
+
+                    elseif containerModel.Name:find("Table") then
+                         local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) end
                     end
-                    -- Tables don't need triggering
 
                     -- Add identified loot parts from temp list to main list
                     if #lootPartsToAdd > 0 then
