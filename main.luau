@@ -947,6 +947,7 @@ LeftGroupBox:AddButton({
 	Disabled = false,
 	Visible = true,
 })
+
 -- Define variables for the controls first
 local lootWaitTime = 0.1 -- Default wait time
 local disableMicroWaits = false -- Default: waits are enabled
@@ -989,7 +990,7 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "2.3-AttrFixStrict" -- Updated version number
+local AutoLootVersion = "2.4-PromptOpenedAttr" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
@@ -1032,9 +1033,10 @@ LeftGroupBox:AddButton({
              warn("  -- tryFirePromptForItem result for", itemContextName, ":", looted); return looted
         end
 
-        -- Function to attempt opening a container (ONLY call if attribute check shows it's FALSE)
+        -- Function to attempt opening a container (ONLY call if prompt's 'Opened' attribute is FALSE or NIL)
+        -- Returns true if it successfully opened it *during this call*, false otherwise.
         local function tryOpenContainer_Phase1(prompt, containerPart, promptContextName)
-            warn("  -- tryOpenContainer_Phase1 called for:", promptContextName, "(Confirmed closed)")
+            warn("  -- tryOpenContainer_Phase1 called for:", promptContextName, "(Prompt Attr Opened=false/nil)")
             local finalResult = { opened = false }
             if not (containerPart and containerPart.Parent) then warn("    -- ERROR: Invalid container part. Returning false."); return finalResult end
             if not (prompt and prompt:IsA("ProximityPrompt") and prompt.Parent) then warn("    -- ERROR: Invalid or missing prompt. Returning false."); return finalResult end
@@ -1046,12 +1048,13 @@ LeftGroupBox:AddButton({
                  if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot() elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame end
                  if not targetCFrame then warn("      -- ERROR: Could not get target CFrame for", promptContextName); break end
                  character:PivotTo(targetCFrame); task.wait(0.07); local success, err = pcall(fireproximityprompt, prompt); task.wait(0.1)
-                 local currentOpenState = containerPart:GetAttribute("Open"); warn("      -- Attempt", attempts + 1, "- Fired prompt. Checked 'Open' attribute:", tostring(currentOpenState))
-                 if currentOpenState == true then openedInLoop = true; warn("      -- Successfully opened in loop."); break end
+                 -- Check the CONTAINER's Open attribute *after* firing to see if it worked
+                 local currentOpenState = containerPart:GetAttribute("Open"); warn("      -- Attempt", attempts + 1, "- Fired prompt. Checked CONTAINER 'Open' attribute:", tostring(currentOpenState))
+                 if currentOpenState == true then openedInLoop = true; warn("      -- Successfully opened (Container Attr Open=true)."); break end
                  attempts = attempts + 1; if not disableMicroWaits then task.wait(0.05) end
             end
             character:PivotTo(originalCFrame)
-            if not openedInLoop then warn("    -- WARNING: Persistent open loop finished but did not open.") end
+            if not openedInLoop then warn("    -- WARNING: Persistent open loop finished but container did not open.") end
             finalResult.opened = openedInLoop; warn("  -- tryOpenContainer_Phase1 result for", promptContextName, ":", openedInLoop); return finalResult
         end
 
@@ -1080,11 +1083,11 @@ LeftGroupBox:AddButton({
         end -- End of findAndLootGold function
 
         -- =============================================================
-        -- Phase 1: Traverse, Check/Open Containers & Identify Loot Locations
+        -- Phase 1: Check Prompt Attribute, Open if Needed, Identify Loot Locations
         -- =============================================================
-        warn("\n--- Starting Phase 1: Checking/Opening Containers & Identifying Loot Locations ---")
+        warn("\n--- Starting Phase 1: Checking Prompt Attributes & Identifying Loot Locations ---")
 
-        -- Recursive function to process items (Models, Folders)
+        -- Recursive function to process items
         local function processItemForOpening(item)
             if not item or not item.Parent then return end
 
@@ -1098,109 +1101,80 @@ LeftGroupBox:AddButton({
                     overallContainerIndex = overallContainerIndex + 1
                     local containerModel = child; local modelIndex = overallContainerIndex
                     warn("-- [Open Phase] Processing Container:", containerModel.Name, "#", modelIndex, "(", containerModel:GetFullName(), ")")
-                    local containerChildren = containerModel:GetChildren(); local lootPartsToAdd = {}; local processedAnyPart = false -- Flag if we handled any part of this container
+                    local containerChildren = containerModel:GetChildren(); local lootPartsToAdd = {}
 
-                    -- Handle Drawer (STRICT Attribute Logic)
+                    -- Handle Drawer (Logic based on Prompt's 'Opened' Attribute)
                     if containerModel.Name == "Drawer" then
                         warn("  -- Handling Drawer Model...")
+                        local addedAnyLootPart = false -- Track if we add *any* loot part from this drawer model
                         for _, cChild in ipairs(containerChildren) do
                             if (cChild.Name:find("Container", 1, true) or cChild.Name == "OpenedSTORAGE") and cChild.Name ~= "Outside_Container" and cChild:IsA("Model") then
                                 local mainDrawer = cChild:FindFirstChild("MainDrawer")
                                 if mainDrawer then
-                                    processedAnyPart = true -- Mark that we found a part to process
                                     warn("    -- Found potential drawer part:", cChild.Name, "-> MainDrawer:", mainDrawer:GetFullName())
-                                    local openState = mainDrawer:GetAttribute("Open") -- Read attribute
-                                    warn("      -- Checking 'Open' attribute for", mainDrawer.Name, ":", tostring(openState))
-                                    Library:Notify(string.format("Drawer %s (%s) Open Attr: %s", containerModel.Name, mainDrawer.Name, tostring(openState)), 1)
+                                    local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt") -- Find prompt first
 
-                                    local shouldAddLootPart = false
-                                    local needsOpeningAttempt = false
+                                    if prompt then
+                                        local promptOpenedAttr = prompt:GetAttribute("Opened") -- Check PROMPT attribute
+                                        warn("      -- Checking PROMPT 'Opened' attribute for", prompt:GetFullName(), ":", tostring(promptOpenedAttr))
+                                        Library:Notify(string.format("Drawer %s (%s) Prompt Attr: %s", containerModel.Name, mainDrawer.Name, tostring(promptOpenedAttr)), 1)
 
-                                    if openState == true then
-                                        warn("      -- State: ALREADY OPEN (Attribute == true). NO interaction needed.")
-                                        shouldAddLootPart = true
-                                    elseif openState == false then
-                                        warn("      -- State: CLOSED (Attribute == false). Needs opening attempt.")
-                                        needsOpeningAttempt = true
-                                    else -- Attribute is nil or non-boolean
-                                        warn("      -- State: UNCERTAIN (Attribute == nil/other). Assuming potentially open. NO interaction.")
-                                        shouldAddLootPart = true -- Add optimistically, but don't interact
-                                    end
-
-                                    -- Attempt opening ONLY if needed
-                                    if needsOpeningAttempt then
-                                        local proxAttach = mainDrawer:FindFirstChild("ProxAttach")
-                                        if proxAttach then
-                                            local prompt = proxAttach:FindFirstChild("ProximityPrompt")
-                                            if prompt then
-                                                 warn("        -- Found prompt. Attempting to open...")
-                                                 Library:Notify(string.format("Attempting to open Drawer %s (%s)", containerModel.Name, mainDrawer.Name), 1)
-                                                 if tryOpenContainer_Phase1(prompt, mainDrawer, cChild.Name .. " Prompt #" .. modelIndex).opened then
-                                                     warn("        -- Successfully opened via prompt.")
-                                                     shouldAddLootPart = true -- Now add it because opening succeeded
-                                                 else
-                                                      warn("        -- Failed to open via prompt.")
-                                                      -- Do not set shouldAddLootPart
-                                                 end
-                                            else warn("        -- ERROR: Found ProxAttach but no ProximityPrompt inside.") end
-                                        else warn("        -- ERROR: Could not find ProxAttach for closed drawer.") end
-                                    end
-
-                                    -- Add the part if decided
-                                    if shouldAddLootPart then
-                                        warn("      -- Decision: Adding", mainDrawer:GetFullName(), "to temp loot list.")
-                                        table.insert(lootPartsToAdd, mainDrawer)
+                                        if promptOpenedAttr == false or promptOpenedAttr == nil then
+                                            warn("      -- Prompt Attr Opened=false/nil. Attempting to open...")
+                                            Library:Notify(string.format("Attempting to open Drawer %s (%s)", containerModel.Name, mainDrawer.Name), 1)
+                                            tryOpenContainer_Phase1(prompt, mainDrawer, cChild.Name .. " Prompt #" .. modelIndex) -- Attempt open, ignore result for adding loot part
+                                        else -- promptOpenedAttr == true
+                                            warn("      -- Prompt Attr Opened=true. Already opened once. NO interaction needed.")
+                                        end
                                     else
-                                         warn("      -- Decision: Not adding this drawer part.")
+                                        warn("      -- WARNING: Could not find ProximityPrompt for", mainDrawer:GetFullName(), ". Cannot attempt opening.")
                                     end
+
+                                    -- ALWAYS add MainDrawer to loot list regardless of prompt state
+                                    warn("      -- Decision: ALWAYS adding", mainDrawer:GetFullName(), "to temp loot list.")
+                                    table.insert(lootPartsToAdd, mainDrawer)
+                                    addedAnyLootPart = true
                                 else warn("    -- ERROR: Found container part", cChild.Name, "but no MainDrawer inside.") end
                             end
                         end
                         local outsideContainer = containerModel:FindFirstChild("Outside_Container")
-                        if outsideContainer then
-                            warn("    -- Found Outside_Container. Adding to temp loot list:", outsideContainer:GetFullName())
-                            table.insert(lootPartsToAdd, outsideContainer)
-                            processedAnyPart = true
-                        end
+                        if outsideContainer then warn("    -- Found Outside_Container. Adding to temp loot list:", outsideContainer:GetFullName()); table.insert(lootPartsToAdd, outsideContainer); addedAnyLootPart = true end
                         warn("  -- Finished handling Drawer Model. Added parts to temp list:", #lootPartsToAdd)
 
-                    -- Handle Lockers/Crowbars (STRICT Attribute Logic)
+                    -- Handle Lockers/Crowbars (Logic based on Prompt's 'Opened' Attribute)
                     elseif containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
                          warn("  -- Handling Locker/Crowbar Model...")
                          local basePart = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then basePart = cChild:FindFirstChild("Base"); if basePart then break end end end
-                         local isConfirmedOpen = false -- Track if *any* door ends up open
 
                          if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
-                             local doorBottom = containerModel:FindFirstChild("DoorBottom"); local doorTop = containerModel:FindFirstChild("DoorTop"); local bottomOpen = false; local topOpen = false
-                             if doorBottom then processedAnyPart = true; local openStateB = doorBottom:GetAttribute("Open"); warn("    -- Bottom Door Open Attr:", tostring(openStateB)); if openStateB == true or openStateB == nil then bottomOpen = true; if openStateB == nil then warn("      -- Attr nil, assuming open. NO interaction.") end else local pB = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt"); if tryOpenContainer_Phase1(pB, doorBottom, containerModel.Name .. " Bottom #" .. modelIndex).opened then bottomOpen = true end end; if not disableMicroWaits then task.wait(0.05) end end
-                             if doorTop then processedAnyPart = true; local openStateT = doorTop:GetAttribute("Open"); warn("    -- Top Door Open Attr:", tostring(openStateT)); if openStateT == true or openStateT == nil then topOpen = true; if openStateT == nil then warn("      -- Attr nil, assuming open. NO interaction.") end else local pT = doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt"); if tryOpenContainer_Phase1(pT, doorTop, containerModel.Name .. " Top #" .. modelIndex).opened then topOpen = true end end end
-                             isConfirmedOpen = bottomOpen or topOpen
+                             local doorBottom = containerModel:FindFirstChild("DoorBottom"); local doorTop = containerModel:FindFirstChild("DoorTop")
+                             if doorBottom then local pB = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt"); if pB then local pO = pB:GetAttribute("Opened"); warn("    -- Bottom Door Prompt Attr:", tostring(pO)); if pO == false or pO == nil then tryOpenContainer_Phase1(pB, doorBottom, containerModel.Name .. " Bottom #" .. modelIndex) else warn("      -- Already opened once. Skipping.") end else warn("    -- WARNING: No prompt for Bottom Door.") end; if not disableMicroWaits then task.wait(0.05) end end
+                             if doorTop then local pT = doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt"); if pT then local pO = pT:GetAttribute("Opened"); warn("    -- Top Door Prompt Attr:", tostring(pO)); if pO == false or pO == nil then tryOpenContainer_Phase1(pT, doorTop, containerModel.Name .. " Top #" .. modelIndex) else warn("      -- Already opened once. Skipping.") end else warn("    -- WARNING: No prompt for Top Door.") end end
                          else
-                             local door = containerModel:FindFirstChild("Door"); if door then processedAnyPart = true; local openStateD = door:GetAttribute("Open"); warn("    -- Single Door Open Attr:", tostring(openStateD)); if openStateD == true or openStateD == nil then isConfirmedOpen = true; if openStateD == nil then warn("      -- Attr nil, assuming open. NO interaction.") end else local pD = door:FindFirstChild("ProximityPrompt"); if tryOpenContainer_Phase1(pD, door, containerModel.Name .. " Door #" .. modelIndex).opened then isConfirmedOpen = true end end end
+                             local door = containerModel:FindFirstChild("Door"); if door then local pD = door:FindFirstChild("ProximityPrompt"); if pD then local pO = pD:GetAttribute("Opened"); warn("    -- Single Door Prompt Attr:", tostring(pO)); if pO == false or pO == nil then tryOpenContainer_Phase1(pD, door, containerModel.Name .. " Door #" .. modelIndex) else warn("      -- Already opened once. Skipping.") end else warn("    -- WARNING: No prompt for Single Door.") end end
                          end
-                         if isConfirmedOpen and basePart then warn("      -- Locker confirmed OPEN. Adding Base to temp loot list."); table.insert(lootPartsToAdd, basePart) elseif isConfirmedOpen and not basePart then warn("    -- WARNING: Locker open but no Base found.") end
-                         warn("  -- Finished handling Locker/Crowbar Model. Confirmed Open:", isConfirmedOpen)
+                         -- ALWAYS add Base part if found
+                         if basePart then warn("      -- ALWAYS adding Base", basePart:GetFullName(), "to temp loot list."); table.insert(lootPartsToAdd, basePart) else warn("    -- WARNING: Could not find Base part for Locker.") end
+                         warn("  -- Finished handling Locker/Crowbar Model.")
 
-                    -- Handle Rolltop (STRICT Attribute Logic)
+                    -- Handle Rolltop (Logic based on Prompt's 'Opened' Attribute)
                     elseif containerModel.Name == "Rolltop" then
                          warn("  -- Handling Rolltop Model...")
-                         local mainDrawerRef = nil; local addedAnyLootPart = false; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then mainDrawerRef = cChild:FindFirstChild("MainDrawer"); if mainDrawerRef then break end end end
-                         if mainDrawerRef then processedAnyPart = true; local openStateR = mainDrawerRef:GetAttribute("Open"); warn("    -- MainDrawer Open Attr:", tostring(openStateR)); local openedThisCheck = false; if openStateR == true or openStateR == nil then openedThisCheck = true; if openStateR == nil then warn("      -- Attr nil, assuming open. NO interaction.") end else local pA = mainDrawerRef:FindFirstChild("ProxAttach"); if pA then local pR = pA:FindFirstChild("ProximityPrompt"); if tryOpenContainer_Phase1(pR, mainDrawerRef, "Rolltop Prompt #" .. modelIndex).opened then openedThisCheck = true end end end; if openedThisCheck then warn("      -- Rolltop confirmed OPEN. Adding MainDrawer to temp loot list."); table.insert(lootPartsToAdd, mainDrawerRef); addedAnyLootPart = true end end
-                         local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then warn("    -- Found Outside_Container. Adding to temp loot list."); table.insert(lootPartsToAdd, outsideContainer); addedAnyLootPart = true end
+                         local mainDrawerRef = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then mainDrawerRef = cChild:FindFirstChild("MainDrawer"); if mainDrawerRef then break end end end
+                         if mainDrawerRef then local pA = mainDrawerRef:FindFirstChild("ProxAttach"); if pA then local pR = pA:FindFirstChild("ProximityPrompt"); if pR then local pO = pR:GetAttribute("Opened"); warn("    -- MainDrawer Prompt Attr:", tostring(pO)); if pO == false or pO == nil then tryOpenContainer_Phase1(pR, mainDrawerRef, "Rolltop Prompt #" .. modelIndex) else warn("      -- Already opened once. Skipping.") end else warn("    -- WARNING: No prompt for Rolltop MainDrawer.") end else warn("    -- WARNING: No ProxAttach for Rolltop MainDrawer.") end; warn("      -- ALWAYS adding MainDrawer", mainDrawerRef:GetFullName(), "to temp loot list."); table.insert(lootPartsToAdd, mainDrawerRef) else warn("    -- WARNING: Could not find MainDrawer for Rolltop.") end
+                         local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then warn("    -- Found Outside_Container. Adding to temp loot list."); table.insert(lootPartsToAdd, outsideContainer) end
                          warn("  -- Finished handling Rolltop Model. Added parts to temp list:", #lootPartsToAdd)
 
-                    -- Handle ToolBox (STRICT Attribute Logic)
+                    -- Handle ToolBox (Logic based on Prompt's 'Opened' Attribute)
                     elseif containerModel.Name == "ToolBox" then
                          warn("  -- Handling ToolBox Model...")
                          local innerContainerRef = nil; local spawnAreasRef = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then innerContainerRef = cChild; break end end
-                         if innerContainerRef then processedAnyPart = true; local openStateTB = innerContainerRef:GetAttribute("Open"); warn("    -- InnerContainer Open Attr:", tostring(openStateTB)); local openedThisCheck = false; if openStateTB == true or openStateTB == nil then openedThisCheck = true; if openStateTB == nil then warn("      -- Attr nil, assuming open. NO interaction.") end else local pTB = containerModel:FindFirstChild("ProximityPrompt"); if pTB then if tryOpenContainer_Phase1(pTB, innerContainerRef, "ToolBox Prompt #" .. modelIndex).opened then openedThisCheck = true end end end; if openedThisCheck then local baseRef = innerContainerRef:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then warn("      -- ToolBox confirmed OPEN. Adding SpawnAreas to temp loot list."); table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox open, no SpawnAreas.") end else warn("    -- WARNING: ToolBox open, no Base.") end end end
+                         if innerContainerRef then local pTB = containerModel:FindFirstChild("ProximityPrompt"); if pTB then local pO = pTB:GetAttribute("Opened"); warn("    -- ToolBox Prompt Attr:", tostring(pO)); if pO == false or pO == nil then tryOpenContainer_Phase1(pTB, innerContainerRef, "ToolBox Prompt #" .. modelIndex) else warn("      -- Already opened once. Skipping.") end else warn("    -- WARNING: No prompt for ToolBox.") end; local baseRef = innerContainerRef:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then warn("      -- ALWAYS adding SpawnAreas", spawnAreasRef:GetFullName(), "to temp loot list."); table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox Base found, but no SpawnAreas.") end else warn("    -- WARNING: ToolBox InnerContainer found, but no Base.") end else warn("    -- WARNING: Could not find InnerContainer for ToolBox.") end
                          warn("  -- Finished handling ToolBox Model. Added parts to temp list:", #lootPartsToAdd)
 
                     -- Handle Tables (Unchanged)
                     elseif containerModel.Name:find("Table") then
-                         warn("  -- Handling Table Model...")
-                         local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then warn("    -- Found Outside_Container. Adding to loot list:", outsideContainer:GetFullName()); table.insert(lootPartsToAdd, outsideContainer); processedAnyPart = true end
-                         warn("  -- Finished handling Table Model.")
+                         warn("  -- Handling Table Model..."); local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then warn("    -- Found Outside_Container. Adding to loot list:", outsideContainer:GetFullName()); table.insert(lootPartsToAdd, outsideContainer) end; warn("  -- Finished handling Table Model.")
                     end
 
                     -- Add identified loot parts from temp list to main list
@@ -1209,9 +1183,7 @@ LeftGroupBox:AddButton({
                         for _, part in ipairs(lootPartsToAdd) do
                             if part and part.Parent then warn("      -- Adding part:", part:GetFullName()); table.insert(partsToLootAfterOpening, part) else warn("      -- Skipping invalid part.") end
                         end
-                    elseif processedAnyPart then -- Log only if we actually processed a part but added nothing
-                         warn("    -- FINAL CHECK: Container", containerModel.Name, "processed, but resulted in no loot parts to add.")
-                    end
+                    else warn("    -- FINAL CHECK: Container", containerModel.Name, "processed, but resulted in no loot parts to add.") end
 
                 -- Case 2: AddedAssets Folder
                 elseif child.Name == "AddedAssets" and child:IsA("Folder") then warn("  -- Descending into Folder:", child:GetFullName()); processItemForOpening(child)
