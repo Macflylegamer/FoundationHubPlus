@@ -950,7 +950,7 @@ LeftGroupBox:AddButton({
 
 -- Define variables for the controls first
 local lootWaitTime = 0.1 -- Default wait time
-local useFastMode = false -- Default: Fast mode (No-TP spam) is disabled
+local useFastMode = false -- Default: Fast mode (No-TP attempts first) is disabled
 local lootSideRooms = false -- Default: only check AddedAssets / direct models explicitly handled
 
 -- Add the controls to the UI GroupBox
@@ -966,11 +966,11 @@ LeftGroupBox:AddToggle("LootSideRooms", {
 })
 
 LeftGroupBox:AddToggle("UseFastModeToggle", {
-    Text = "Use Fast Mode (Spam Prompt - Risky)", -- Updated text
+    Text = "Use Fast Mode (No TP First - Risky)", -- Keep text, logic changed
     Default = useFastMode,
     Callback = function(Value)
         useFastMode = Value
-        print("-- DEBUG: Fast Mode (Spam Prompt) set to:", useFastMode)
+        print("-- DEBUG: Fast Mode (No TP First) set to:", useFastMode)
     end,
     Disabled = false,
     Visible = true,
@@ -990,13 +990,13 @@ LeftGroupBox:AddSlider("LootWaitSlider", {
     Disabled = false,
     Visible = true,
 })
-local AutoLootVersion = "2.7-SpamFastMode" -- Updated version number
+local AutoLootVersion = "2.8-FastAttemptFallback" -- Updated version number
 LeftGroupBox:AddButton({
     Text = "Auto Loot Gold (Current Room)",
     Func = function()
         Library:Notify("Auto Loot Gold Started (v" .. AutoLootVersion .. ")", 1)
         warn("--- Auto Loot Gold (v" .. AutoLootVersion .. ") Started ---")
-        if useFastMode then warn("--- Fast Mode (Spam Prompt) Enabled ---") end
+        if useFastMode then warn("--- Fast Mode (No TP First) Enabled ---") end
 
         local player = Players.LocalPlayer
         local character = player.Character
@@ -1011,7 +1011,7 @@ LeftGroupBox:AddButton({
         local partsToLootAfterOpening = {}
         local overallContainerIndex = 0
 
-        -- Function to try looting an item via teleport loop (STANDARD MODE ONLY)
+        -- Function to try looting an item via teleport loop (STANDARD METHOD)
         local function tryFirePromptForItem_Teleport(itemPromptRef, itemModel, itemContextName)
              warn("  -- tryFirePromptForItem_Teleport called for:", itemContextName)
              if not (itemModel and itemModel.Parent) then return true end
@@ -1023,7 +1023,7 @@ LeftGroupBox:AddButton({
                      local promptParent = currentItemPrompt.Parent; if not promptParent then break end
                      local targetCFrame; if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot() elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame end
                      if targetCFrame then
-                         character:PivotTo(targetCFrame); task.wait(0.05); local success, err = pcall(fireproximityprompt, currentItemPrompt); task.wait(0.07)
+                         character:PivotTo(targetCFrame); task.wait(0.05); local success, err = pcall(fireproximityprompt, currentItemPrompt); task.wait(0.07) -- Essential waits
                          if not itemModel or not itemModel.Parent then looted = true; break end
                      end
                  end
@@ -1035,7 +1035,7 @@ LeftGroupBox:AddButton({
              return looted
         end
 
-        -- MODIFIED: Function to attempt opening a container. Spams direct fire first if useFastMode is true.
+        -- MODIFIED: Function to attempt opening a container. Tries brief direct fire first if useFastMode, falls back to teleport loop.
         local function tryOpenContainer_Phase1(prompt, containerPart, promptContextName)
             warn("  -- tryOpenContainer_Phase1 called for:", promptContextName, "(Prompt Attr Opened=false/nil)")
             local finalResult = { opened = false }
@@ -1044,35 +1044,41 @@ LeftGroupBox:AddButton({
 
             local openedSuccessfully = false
 
-            -- Attempt Direct Fire Spam First if Fast Mode is Enabled
+            -- Attempt Brief Direct Fire First if Fast Mode is Enabled
             if useFastMode then
-                warn("    -- Fast Mode: Attempting DIRECT fire spam for container:", promptContextName)
-                local startTime = tick()
-                local maxSpamTime = 2.0 -- Max 2 seconds spamming
+                warn("    -- Fast Mode: Attempting BRIEF direct fire for container:", promptContextName)
+                local fastAttempts = 0
+                local maxFastAttempts = 3 -- Try firing 3 times quickly
                 local openedFast = false
-                while tick() - startTime < maxSpamTime do
-                    if not (prompt and prompt.Parent and prompt.Enabled) then warn("      -- Prompt became invalid during fast open spam."); break end
-                    pcall(fireproximityprompt, prompt) -- Fire without pcall check for speed, error unlikely here
-                    task.wait(0.06) -- Short delay between fires
+                while fastAttempts < maxFastAttempts do
+                    if not (prompt and prompt.Parent and prompt.Enabled) then warn("      -- Prompt became invalid during fast open attempt."); break end
+                    pcall(fireproximityprompt, prompt)
+                    task.wait(0.05) -- Short delay
                     local currentOpenState = containerPart:GetAttribute("Open")
                     if currentOpenState == true then
-                        warn("      -- SUCCESS: Container opened via fast fire spam.")
+                        warn("      -- SUCCESS: Container opened via fast fire attempt.")
                         openedFast = true
                         break
                     end
+                    fastAttempts = fastAttempts + 1
                 end
-                if not openedFast then warn("      -- FAILURE: Container did not open via fast fire spam within time limit.") end
-                openedSuccessfully = openedFast -- Use the result of the fast attempt
-            else
-                -- Standard Mode: Teleport Loop
-                warn("    -- Standard Mode: Using teleport+open loop.")
+                if openedFast then
+                    openedSuccessfully = true
+                else
+                    warn("      -- FAILURE: Brief direct fire failed. Falling back to teleport loop.")
+                end
+            end
+
+            -- If direct fire wasn't attempted OR it failed, run the teleport loop
+            if not openedSuccessfully then
+                if not useFastMode then warn("    -- Standard Mode: Using teleport+open loop.") else warn("    -- Fallback: Using teleport+open loop.") end
                 local attempts = 0; local maxAttempts = 20; local openedInLoop = false; local originalCFrame = character.HumanoidRootPart.CFrame
                 while attempts < maxAttempts do
                      if not (prompt and prompt.Parent and prompt.Enabled) then warn("      -- Prompt for", promptContextName, "became invalid or disabled during open attempt."); break end
                      local promptParent = prompt.Parent; local targetCFrame
                      if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot() elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame end
                      if not targetCFrame then warn("      -- ERROR: Could not get target CFrame for", promptContextName); break end
-                     character:PivotTo(targetCFrame); task.wait(0.07); local success, err = pcall(fireproximityprompt, prompt); task.wait(0.1)
+                     character:PivotTo(targetCFrame); task.wait(0.07); local success, err = pcall(fireproximityprompt, prompt); task.wait(0.1) -- Essential waits
                      local currentOpenState = containerPart:GetAttribute("Open");
                      if currentOpenState == true then openedInLoop = true; warn("      -- Successfully opened via teleport loop."); break end
                      attempts = attempts + 1;
@@ -1087,7 +1093,7 @@ LeftGroupBox:AddButton({
             return finalResult
         end
 
-        -- MODIFIED: Function to find and loot gold. Spams direct fire first if useFastMode is true.
+        -- MODIFIED: Function to find and loot gold. Tries brief direct fire first if useFastMode, falls back to teleport loot.
         local function findAndLootGold(itemContainer, containerContextName)
             -- warn("  -- [Loot Phase] findAndLootGold called for:", containerContextName, "Part:", itemContainer and itemContainer:GetFullName() or "nil")
             if not itemContainer then warn("    -- ERROR: itemContainer is nil. Aborting loot."); return end
@@ -1097,7 +1103,7 @@ LeftGroupBox:AddButton({
             local potentialItems = itemParentToSearch:GetChildren(); if #potentialItems == 0 then return end
 
             for i, item in ipairs(potentialItems) do
-                local itemModel = item -- Keep reference for checking existence
+                local itemModel = item
                 if not (itemModel and itemModel.Parent) then continue end
 
                 if table.find(goldItemNames, itemModel.Name) then
@@ -1105,32 +1111,36 @@ LeftGroupBox:AddButton({
                     if itemPrompt then
                         local lootedThisItem = false
                         if useFastMode then
-                            warn("        -- Fast Mode: Attempting DIRECT fire spam for GOLD:", itemModel.Name)
-                            local startTime = tick()
-                            local maxSpamTime = 1.5 -- Max 1.5 seconds spamming for gold
-                            while itemModel and itemModel.Parent and (tick() - startTime < maxSpamTime) do
-                                 if not (itemPrompt and itemPrompt.Parent and itemPrompt.Enabled) then warn("      -- Gold Prompt became invalid during fast loot spam."); break end
-                                 pcall(fireproximityprompt, itemPrompt) -- Fire without pcall check
-                                 task.wait(0.05) -- Very short delay
+                            warn("        -- Fast Mode: Attempting BRIEF direct fire for GOLD:", itemModel.Name)
+                            local fastAttempts = 0
+                            local maxFastAttempts = 3
+                            while fastAttempts < maxFastAttempts do
+                                 if not (itemModel and itemModel.Parent) then lootedThisItem = true; break end -- Check if gone already
+                                 if not (itemPrompt and itemPrompt.Parent and itemPrompt.Enabled) then warn("      -- Gold Prompt became invalid during fast loot attempt."); break end
+                                 pcall(fireproximityprompt, itemPrompt)
+                                 task.wait(0.05)
+                                 fastAttempts = fastAttempts + 1
                             end
-                            -- Check final state after loop
+                            -- Check final state after brief attempts
                             if not (itemModel and itemModel.Parent) then
-                                 warn("          -- SUCCESS: Gold looted via fast fire spam.")
+                                 warn("          -- SUCCESS: Gold looted via brief direct fire.")
                                  itemsLootedCount = itemsLootedCount + 1
                                  lootedThisItem = true
                             else
-                                 warn("          -- FAILURE: Gold still exists after fast fire spam.")
-                                 -- DO NOT FALLBACK TO TELEPORT IN FAST MODE
+                                 warn("          -- FAILURE: Gold still exists after brief direct fire. Falling back to teleport.")
+                                 -- Fall through to teleport method below
                             end
-                        else
-                            -- Standard Mode: Use teleport method
-                            warn("        -- Standard Mode: Using teleport+loot (tryFirePromptForItem_Teleport) for GOLD:", itemModel.Name)
+                        end
+
+                        -- If not looted via fast method OR if fast mode is off, use teleport method
+                        if not lootedThisItem then
+                            if not useFastMode then warn("        -- Standard Mode: Using teleport+loot for GOLD:", itemModel.Name) end
                             if tryFirePromptForItem_Teleport(itemPrompt, itemModel, itemModel.Name .. " ItemPrompt in " .. containerContextName) then
-                                warn("          -- SUCCESS: Standard teleport+loot succeeded for GOLD:", itemModel.Name)
+                                warn("          -- SUCCESS: Teleport loot succeeded for GOLD:", itemModel.Name)
                                 itemsLootedCount = itemsLootedCount + 1
                                 lootedThisItem = true
                             else
-                                warn("          -- FAILED standard teleport+loot for GOLD:", itemModel.Name)
+                                warn("          -- FAILED teleport loot for GOLD:", itemModel.Name)
                             end
                         end
                     else warn("        -- ERROR: Could not find ItemPrompt inside gold item:", itemModel.Name) end
@@ -1165,11 +1175,7 @@ LeftGroupBox:AddButton({
                                 local mainDrawer = cChild:FindFirstChild("MainDrawer")
                                 if mainDrawer then
                                     local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt")
-                                    if prompt then
-                                        local promptOpenedAttr = prompt:GetAttribute("Opened")
-                                        if promptOpenedAttr == false or promptOpenedAttr == nil then
-                                            tryOpenContainer_Phase1(prompt, mainDrawer, cChild.Name .. " Prompt #" .. modelIndex)
-                                        end
+                                    if prompt then local pO = prompt:GetAttribute("Opened"); if pO == false or pO == nil then tryOpenContainer_Phase1(prompt, mainDrawer, cChild.Name .. " Prompt #" .. modelIndex) end
                                     else warn("      -- WARNING: Could not find ProximityPrompt for", mainDrawer:GetFullName()) end
                                     table.insert(lootPartsToAdd, mainDrawer); addedAnyLootPart = true
                                 else warn("    -- ERROR: Found container part", cChild.Name, "but no MainDrawer inside.") end
@@ -1182,7 +1188,7 @@ LeftGroupBox:AddButton({
                          local basePart = nil; for _, cChild in ipairs(containerChildren) do if (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") and cChild:IsA("Model") then basePart = cChild:FindFirstChild("Base"); if basePart then break end end end
                          if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then
                              local doorBottom = containerModel:FindFirstChild("DoorBottom"); local doorTop = containerModel:FindFirstChild("DoorTop")
-                             if doorBottom then local pB = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt"); if pB then local pO = pB:GetAttribute("Opened"); if pO == false or pO == nil then tryOpenContainer_Phase1(pB, doorBottom, containerModel.Name .. " Bottom #" .. modelIndex) end else warn("    -- WARNING: No prompt for Bottom Door.") end; task.wait(0.01) end
+                             if doorBottom then local pB = doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt"); if pB then local pO = pB:GetAttribute("Opened"); if pO == false or pO == nil then tryOpenContainer_Phase1(pB, doorBottom, containerModel.Name .. " Bottom #" .. modelIndex) end else warn("    -- WARNING: No prompt for Bottom Door.") end end
                              if doorTop then local pT = doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt"); if pT then local pO = pT:GetAttribute("Opened"); if pO == false or pO == nil then tryOpenContainer_Phase1(pT, doorTop, containerModel.Name .. " Top #" .. modelIndex) end else warn("    -- WARNING: No prompt for Top Door.") end end
                          else
                              local door = containerModel:FindFirstChild("Door"); if door then local pD = door:FindFirstChild("ProximityPrompt"); if pD then local pO = pD:GetAttribute("Opened"); if pO == false or pO == nil then tryOpenContainer_Phase1(pD, door, containerModel.Name .. " Door #" .. modelIndex) end else warn("    -- WARNING: No prompt for Single Door.") end end
@@ -1216,7 +1222,7 @@ LeftGroupBox:AddButton({
                 elseif child.Name == "AddedAssets" and child:IsA("Folder") then processItemForOpening(child)
                 elseif lootSideRooms and child.Name == "SideRoom" and child:IsA("Model") then processItemForOpening(child)
                 end
-                task.wait()
+                task.wait() -- Keep minimal yield between processing top-level items in the recursion
             end
         end
 
