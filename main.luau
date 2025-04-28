@@ -195,18 +195,229 @@ for _, Item in getgc(false) do
     end
 end
 
-local function areDangerousEntitiesPresent()
-    -- Check workspace directly for specific entity names that should pause the script
-    -- Add more names if needed (e.g., Figure, Seek if they cause issues)
-    if workspace:FindFirstChild("Rush", true) or
-       workspace:FindFirstChild("Ambush", true) or
-       workspace:FindFirstChild("Ram", true) -- Add Ram as requested
-       -- workspace:FindFirstChild("Seek", true) -- Optional: Add Seek if needed
-       -- workspace:FindFirstChild("FigureRig", true) -- Optional: Add Figure if needed
-    then
+-- Function to check if blocking entities (Rush, Ambush, Ram) are present
+local function isEntityBlocking()
+    -- Check workspace directly for the presence of these entity models
+    if workspace:FindFirstChild("Rush") or workspace:FindFirstChild("Ambush") or workspace:FindFirstChild("Ram") then
         return true
     end
+    -- You could also iterate through allTrackedESPs if you prefer ESP-based detection
+    -- for _, data in pairs(allTrackedESPs) do
+    --     if data.Category == 'Entity' and (data.ESP.Name == 'Rush' or data.ESP.Name == 'Ambush' or data.ESP.Name == 'Ram') then
+    --         -- Check if the ESP object still corresponds to a valid instance in workspace
+    --         if data.ESP.Adornee and data.ESP.Adornee.Parent then
+    --              return true
+    --         end
+    --     end
+    -- end
     return false
+end
+
+-- New function specifically for Auto Rooms to loot a given room model
+-- This version forces fast mode and uses the provided side room flag
+local function executeAutoRoomLoot(roomModel, lootSideRoomsFlag)
+    if not roomModel or not roomModel:IsA("Model") then
+        warn("AutoRoomLoot: Invalid roomModel provided.")
+        return
+    end
+
+    local player = Players.LocalPlayer
+    local character = player.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
+        warn("AutoRoomLoot: Player character not found.")
+        return
+    end
+
+    local currentRoomName = roomModel.Name
+    Library:Notify("AutoRoomLoot: Looting " .. currentRoomName, 1)
+    warn("--- AutoRoomLoot: Looting ", currentRoomName, " ---")
+    warn("--- AutoRoomLoot: Forced Fast Gold Loot ---")
+    if lootSideRoomsFlag then warn("--- AutoRoomLoot: Loot Side Rooms Enabled ---") end
+
+    local goldItemNames = {"Coin", "CoinStack", "GoldBar", "GoldBarAndDiamonds"}
+    local itemsLootedCount = 0
+    local partsToLootAfterOpening = {}
+    local overallContainerIndex = 0 -- Reset for each room loot
+
+    -- Helper function: Trigger container prompt (teleport and fire) - Copied from original
+    local function triggerContainerPrompt_Reliable(prompt, containerPart, promptContextName)
+        -- Check for blocking entities before triggering
+        while isEntityBlocking() do
+            Library:Notify("Entity detected! Pausing AutoRoomLoot trigger...", 1)
+            task.wait(1)
+        end
+        if not (containerPart and containerPart.Parent) then warn("    -- ERROR: Invalid container part for reliable trigger."); return end
+        if not (prompt and prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Enabled) then warn("    -- ERROR: Invalid or disabled prompt for reliable trigger."); return end
+        local originalCFrame = character.HumanoidRootPart.CFrame
+        local promptParent = prompt.Parent
+        local targetCFrame
+        if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot()
+        elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame
+        elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame
+        end
+        if not targetCFrame then warn("      -- ERROR: Could not get target CFrame for reliable trigger."); character:PivotTo(originalCFrame); return end
+
+        character:PivotTo(targetCFrame)
+        task.wait(0.07)
+        local success1, err1 = pcall(fireproximityprompt, prompt)
+        task.wait(0.08)
+        -- Fire again if still enabled (handles cases where one fire isn't enough)
+        if prompt and prompt.Parent and prompt.Enabled then
+            pcall(fireproximityprompt, prompt)
+            task.wait(0.05)
+        end
+        character:PivotTo(originalCFrame)
+        -- warn("      -- Finished reliable trigger attempt for:", promptContextName) -- Less verbose for auto mode
+    end
+
+    -- MODIFIED: Function to find and loot gold (Handles Table structure correctly, FORCED FAST MODE)
+    local function findAndLootGold(itemContainer, containerContextName)
+        -- Check for blocking entities before looting
+        while isEntityBlocking() do
+            Library:Notify("Entity detected! Pausing AutoRoomLoot search...", 1)
+            task.wait(1)
+        end
+        if not itemContainer then warn("    -- ERROR: itemContainer is nil. Aborting loot."); return end
+
+        local itemParentToSearch = itemContainer
+        local spawnFolder = nil
+        spawnFolder = itemContainer:FindFirstChild("ItemSpawns") or itemContainer:FindFirstChild("SpawnAreas")
+        if not spawnFolder and itemContainer.Name == "Outside_Container" then
+             local baseOutline = itemContainer:FindFirstChild("BaseOutline")
+             if baseOutline then spawnFolder = baseOutline:FindFirstChild("ItemSpawns") or baseOutline:FindFirstChild("SpawnAreas") end
+        end
+        if spawnFolder then itemParentToSearch = spawnFolder end
+        if not itemParentToSearch or not itemParentToSearch.Parent then warn("    -- ERROR: Invalid itemParentToSearch:", itemParentToSearch and itemParentToSearch:GetFullName() or "nil"); return end
+
+        local potentialItems = itemParentToSearch:GetChildren()
+        if #potentialItems == 0 then return end
+
+        for i, item in ipairs(potentialItems) do
+            -- Check for blocking entities inside the loop
+            while isEntityBlocking() do
+                Library:Notify("Entity detected! Pausing AutoRoomLoot item check...", 1)
+                task.wait(1)
+            end
+            local itemModel = item; if not (itemModel and itemModel.Parent) then continue end
+            if table.find(goldItemNames, itemModel.Name) then
+                local itemPrompt = itemModel:FindFirstChild("ItemPrompt")
+                if itemPrompt and itemPrompt:IsA("ProximityPrompt") then
+                    local lootedThisItem = false
+                    -- FORCE FAST MODE: Try direct fire first
+                    local fastAttempts = 0; local maxFastAttempts = 3
+                    while fastAttempts < maxFastAttempts do
+                        if not (itemModel and itemModel.Parent) then lootedThisItem = true; break end
+                        if not (itemPrompt and itemPrompt.Parent and itemPrompt.Enabled) then break end
+                        pcall(fireproximityprompt, itemPrompt)
+                        task.wait(0.05) -- Short wait between attempts
+                        fastAttempts = fastAttempts + 1
+                    end
+                    if not (itemModel and itemModel.Parent) then
+                        itemsLootedCount = itemsLootedCount + 1
+                        lootedThisItem = true
+                        -- warn("          -- SUCCESS: Fast loot successful for GOLD:", itemModel.Name) -- Less verbose
+                    else
+                         warn("          -- FAILURE: Gold still exists after fast fire. Item:", itemModel.Name)
+                         -- No fallback to teleport in this integrated version
+                    end
+                else warn("        -- ERROR: Could not find ItemPrompt inside gold item:", itemModel.Name) end
+            end
+        end
+    end -- End of findAndLootGold function
+
+    -- =============================================================
+    -- Phase 1: Check True State, Trigger if Needed, Identify Loot Locations
+    -- =============================================================
+    -- warn("\n--- AutoRoomLoot: Starting Phase 1: Checking True State & Identifying Loot Locations ---") -- Less verbose
+
+    -- Recursive function to process items
+    local function processItemForOpening(item)
+        if not item or not item.Parent then return end
+        -- Check for blocking entities
+        while isEntityBlocking() do
+            Library:Notify("Entity detected! Pausing AutoRoomLoot container check...", 1)
+            task.wait(1)
+        end
+
+        local children = item:GetChildren()
+        for _, child in ipairs(children) do
+            if not child or not child.Parent then continue end
+            local isKnownContainer = child:IsA("Model") and (child.Name:find("LockerVariant") or child.Name:find("CrowbarVariant") or child.Name == "Drawer" or child.Name:find("Table") or child.Name == "Rolltop" or child.Name == "ToolBox")
+
+            if isKnownContainer then
+                overallContainerIndex = overallContainerIndex + 1
+                local containerModel = child; local modelIndex = overallContainerIndex
+                -- warn("-- [Open Phase] Processing Container:", containerModel.Name, "#", modelIndex) -- Less verbose
+                local containerChildren = containerModel:GetChildren(); local lootPartsToAdd = {}
+
+                local function checkAndTrigger(promptRef, innerModelRef, partForTrigger, context)
+                    local promptOpenedAttr = promptRef and promptRef:GetAttribute("Opened"); local nameOK = innerModelRef and innerModelRef.Name == "OpenedSTORAGE"; local isTrulyOpen = (promptOpenedAttr == true and nameOK == true)
+                    -- warn("      -- Check:", context, "Prompt Attr:", tostring(promptOpenedAttr), "Inner Name:", innerModelRef and innerModelRef.Name or "N/A", "Truly Open:", isTrulyOpen) -- Less verbose
+                    if not isTrulyOpen and promptRef then triggerContainerPrompt_Reliable(promptRef, partForTrigger, context .. " Trigger #" .. modelIndex) elseif not promptRef then warn("      -- WARNING: No prompt found for", context) end
+                end
+
+                local innerModels = {}
+                for _, cChild in ipairs(containerChildren) do if cChild:IsA("Model") and (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") then table.insert(innerModels, cChild) end end
+                local innerModelRef = #innerModels > 0 and innerModels[1] or nil
+
+                -- Handle Drawer
+                if containerModel.Name == "Drawer" then
+                    for _, cChild in ipairs(containerChildren) do if cChild:IsA("Model") and (cChild.Name:find("Container", 1, true) or cChild.Name == "OpenedSTORAGE") and cChild.Name ~= "Outside_Container" then local currentInnerModel = cChild; local mainDrawer = currentInnerModel:FindFirstChild("MainDrawer"); if mainDrawer then local prompt = mainDrawer:FindFirstChild("ProxAttach", true):FindFirstChild("ProximityPrompt"); checkAndTrigger(prompt, currentInnerModel, mainDrawer, "Drawer." .. currentInnerModel.Name); table.insert(lootPartsToAdd, mainDrawer); else warn("    -- ERROR: No MainDrawer in", cChild:GetFullName()) end end end
+                    local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer); end
+                -- Handle Lockers/Crowbars
+                elseif containerModel.Name:find("LockerVariant") or containerModel.Name:find("CrowbarVariant") then
+                     local basePart = innerModelRef and innerModelRef:FindFirstChild("Base"); if basePart then table.insert(lootPartsToAdd, basePart) else warn("    -- WARNING: Could not find Base part for Locker/Crowbar.") end
+                     if containerModel.Name:find("LLV2") or containerModel.Name:find("Variant2") then local doorBottom = containerModel:FindFirstChild("DoorBottom"); local promptB = doorBottom and doorBottom:FindFirstChild("DoorBottom", true):FindFirstChild("ProximityPrompt"); local doorTop = containerModel:FindFirstChild("DoorTop"); local promptT = doorTop and doorTop:FindFirstChild("DoorTop", true):FindFirstChild("ProximityPrompt"); checkAndTrigger(promptB, innerModelRef, doorBottom, "LockerV2 Bottom Door"); checkAndTrigger(promptT, innerModelRef, doorTop, "LockerV2 Top Door")
+                     else local door = containerModel:FindFirstChild("Door"); local promptD = door and door:FindFirstChild("ProximityPrompt"); checkAndTrigger(promptD, innerModelRef, door, "Locker Single Door") end
+                -- Handle Rolltop
+                elseif containerModel.Name == "Rolltop" then
+                     local mainDrawerRef = innerModelRef and innerModelRef:FindFirstChild("MainDrawer"); if mainDrawerRef then local pA = mainDrawerRef:FindFirstChild("ProxAttach"); local promptR = pA and pA:FindFirstChild("ProximityPrompt"); checkAndTrigger(promptR, innerModelRef, mainDrawerRef, "Rolltop MainDrawer"); table.insert(lootPartsToAdd, mainDrawerRef) else warn("    -- WARNING: Could not find MainDrawer for Rolltop.") end
+                     local outsideContainer = containerModel:FindFirstChild("Outside_Container"); if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) end
+                -- Handle ToolBox
+                elseif containerModel.Name == "ToolBox" then
+                     local spawnAreasRef = nil; local toolBoxInnerModel = nil
+                     for _, cChild in ipairs(containerChildren) do if cChild:IsA("Model") and (cChild.Name == "Container" or cChild.Name == "OpenedSTORAGE") then toolBoxInnerModel = cChild; break end end
+                     if toolBoxInnerModel then local promptTB = containerModel:FindFirstChild("ProximityPrompt"); checkAndTrigger(promptTB, toolBoxInnerModel, toolBoxInnerModel, "ToolBox"); local baseRef = toolBoxInnerModel:FindFirstChild("Base"); if baseRef then spawnAreasRef = baseRef:FindFirstChild("SpawnAreas"); if spawnAreasRef then table.insert(lootPartsToAdd, spawnAreasRef) else warn("    -- WARNING: ToolBox Base found, but no SpawnAreas.") end else warn("    -- WARNING: ToolBox InnerContainer found, but no Base.") end else warn("    -- WARNING: Could not find InnerContainer for ToolBox.") end
+                -- Handle ALL Table variants
+                elseif containerModel.Name:find("Table") then
+                     local outsideContainer = containerModel:FindFirstChild("Outside_Container")
+                     if outsideContainer then table.insert(lootPartsToAdd, outsideContainer) else warn("    -- WARNING: No Outside_Container found for Table variant:", containerModel.Name) end
+                end
+
+                if #lootPartsToAdd > 0 then
+                    for _, part in ipairs(lootPartsToAdd) do if part and part.Parent then table.insert(partsToLootAfterOpening, part) else warn("      -- Skipping invalid loot part.") end end
+                end
+
+            -- Case 2: AddedAssets Folder / Case 3: SideRoom Model (Conditional)
+            elseif child.Name == "AddedAssets" and child:IsA("Folder") then processItemForOpening(child)
+            elseif lootSideRoomsFlag and child.Name == "SideRoom" and child:IsA("Model") then processItemForOpening(child) -- Use the flag here
+            end
+            task.wait() -- Minimal yield
+        end
+    end
+
+    -- Start the recursive processing for the specific room
+    processItemForOpening(roomModel)
+    -- warn("--- AutoRoomLoot: Finished Phase 1 Recursive Processing ---") -- Less verbose
+    -- warn("-- Phase 1 Summary: Identified", #partsToLootAfterOpening, "potential loot locations.") -- Less verbose
+
+    -- Phase 2: Loot Gold from Identified Locations
+    if #partsToLootAfterOpening > 0 then
+        -- warn("\n--- AutoRoomLoot: Starting Phase 2: Looting Gold ---") -- Less verbose
+        local uniquePartsLooted = {}
+        for i, part in ipairs(partsToLootAfterOpening) do
+            if not (part and part.Parent) then continue end
+            if uniquePartsLooted[part] then continue end
+            local contextName = part.Name; local parentModel = part:FindFirstAncestorWhichIsA("Model"); if parentModel then contextName = parentModel.Name .. " " .. contextName end
+            findAndLootGold(part, contextName .. " #" .. i)
+            uniquePartsLooted[part] = true
+        end
+        -- warn("--- AutoRoomLoot: Finished Phase 2: Looting Gold ---") -- Less verbose
+    end
+
+    -- Final Notification for this room
+    warn("--- AutoRoomLoot: Finished Looting ", currentRoomName, " ---")
+    Library:Notify("AutoRoomLoot: Finished " .. currentRoomName .. ". Looted " .. itemsLootedCount .. " gold items.", 2)
 end
 
 local Options = Library.Options
@@ -578,29 +789,8 @@ workspace.DescendantAdded:Connect(function(Prompt)
         Prompt.MaxActivationDistance = Prompt.MaxActivationDistance * PM
     end
 end)
-local RightGroupBox = Tabs.Main:AddLeftGroupbox("<b>Auto-Rooms</b>")
-RightGroupBox:AddToggle("AutoLootDuringAutoRooms", {
-    Text = "Auto Loot After Opening Door",
-    Default = false,
-    Callback = function(Value)
-        -- The main logic will check this toggle's value directly
-        Options.AutoLootDuringAutoRooms.Value = Value -- Store value if needed elsewhere, or just use Toggles[...]
-    end,
-    Disabled = false,
-    Visible = true,
-})
-
-RightGroupBox:AddToggle("AutoLootSideRoomsDuringAutoRooms", {
-    Text = "Loot Side Rooms During Auto Rooms",
-    Default = false,
-    Callback = function(Value)
-        -- The main logic will check this toggle's value directly
-        Options.AutoLootSideRoomsDuringAutoRooms.Value = Value -- Store value if needed elsewhere, or just use Toggles[...]
-    end,
-    Disabled = false,
-    Visible = true,
-})
-
+-- Existing Auto-Rooms RightGroupBox
+local RightGroupBox = Tabs.Main:AddRightGroupbox("<b>Auto-Rooms</b>")
 local ARTargetReach = 205
 RightGroupBox:AddSlider("ARRoomReach", {
 	Text = "Room to Reach",
@@ -611,11 +801,12 @@ RightGroupBox:AddSlider("ARRoomReach", {
 	Compact = true,
 
 	Callback = function(Value)
-		
+		-- The callback for ARRoomReach doesn't need modification for this feature
+        Options.ARRoomReach.Value = Value -- Ensure slider value is saved if using SaveManager
 	end,
 
-	Disabled = false, 
-	Visible = true, 
+	Disabled = false,
+	Visible = true,
 })
 local CollectionService = game:GetService("CollectionService")
 local Rooms = workspace.GeneratedRooms
@@ -624,206 +815,205 @@ local FiredPrompts = {}
 local DoggedRooms = {}
 local CutFolder = Instance.new("Folder")
 local ARCon
+
+-- [[ AUTOROOMS BUTTON AND LOGIC MODIFIED BELOW ]] --
+
+-- Add the new toggles for integrated loot control
+RightGroupBox:AddToggle("AR_AutoLootEnabled", {
+    Text = "Auto Loot During Auto Rooms",
+    Default = false, -- Default to off
+    Callback = function(Value)
+        -- No immediate action needed here, state is checked in the loop
+    end,
+    Disabled = false,
+    Visible = true,
+})
+
+RightGroupBox:AddToggle("AR_LootSideRoomsEnabled", {
+    Text = "Loot Side Rooms During Auto Rooms",
+    Default = false, -- Default to off
+    Callback = function(Value)
+        -- No immediate action needed here, state is checked when calling loot function
+    end,
+    Disabled = false,
+    Visible = true,
+})
+
+-- Modified Auto Rooms Button and Logic
 RightGroupBox:AddButton({
-	Text = "Start/Stop",
+	Text = "Start/Stop Auto Rooms", -- Renamed for clarity
 	Func = function()
         ARGoing = not ARGoing
         if ARGoing then
+            -- Clear previous run state
+            FiredPrompts = {}
+            DoggedRooms = {}
+            -- Move cutscenes
             for _, scene in ClientMain.CLIENT.CutsceneHandler.Cutscenes:GetChildren() do
                 scene.Parent = CutFolder
             end
             Library:Notify("Auto rooms started")
 
+            ARCon = RunService.Stepped:Connect(function()
+                -- PAUSE CHECK: Check for blocking entities at the start of each step
+                while ARGoing and isEntityBlocking() do
+                    Library:Notify("Entity detected! Pausing Auto Rooms...", 1)
+                    task.wait(1) -- Wait if entities are present
+                end
+                if not ARGoing then return end -- Exit if stopped during pause
 
+                local Character = Players.LocalPlayer.Character
+                if not Character or not Character.PrimaryPart then return end -- Need character
 
-ARCon = RunService.Stepped:Connect(function()
-    -- PAUSE Check: If dangerous entities are present, skip this step
-    if areDangerousEntitiesPresent() then
-        -- Optional: Add a notification or warning that it's paused
-        -- Library:Notify("Auto Rooms paused due to entity presence.", 1)
-        return -- Stop processing this frame
-    end
+                local RoomNumbers = {}
+                if not Rooms then Rooms = workspace.GeneratedRooms; if not Rooms then return end end -- Ensure Rooms exists
 
-    local Character = Players.LocalPlayer.Character
-    local RoomNumbers = {}
-    local currentRoomValue = ClientMain.CLIENT.Values.CurrentRoom.Value -- Get current room object
+                for _, Room in Rooms:GetChildren() do
+                    if Room:IsA("Model") then -- Basic check
+                        CollectionService:RemoveTag(Room, "DarkRoom") -- Keep this
+                        local Number = tonumber(Room.Name:gsub("Room", ""))
+                        if Number then table.insert(RoomNumbers, Number) end
+                    end
+                end
 
-    -- Ensure Rooms folder exists
-    if not Rooms then Rooms = workspace:FindFirstChild("GeneratedRooms") end
-    if not Rooms then return end -- Exit if GeneratedRooms doesn't exist yet
+                if #RoomNumbers == 0 then return end -- No rooms found yet
 
-    for _, Room in Rooms:GetChildren() do
-        if Room:IsA("Model") and Room.Name:match("^Room%d+$") then -- Basic validation
-            CollectionService:RemoveTag(Room, "DarkRoom") -- Keep existing tag removal
-            local Number = tonumber(Room.Name:gsub("Room", ""))
-            if Number then
-                table.insert(RoomNumbers, Number)
-            end
-        end
-    end
+                table.sort(RoomNumbers) -- Sort ascending to find the latest
+                local LastRoomNumber = RoomNumbers[#RoomNumbers]
+                local CurrentRoomNumber = LastRoomNumber -- The room we are likely *in* or just finished
+                local NextRoomNumber = CurrentRoomNumber + 1
+                local RoomToProcess = Rooms:FindFirstChild("Room" .. tostring(CurrentRoomNumber)) -- The room whose exit we need to trigger
 
-    if #RoomNumbers == 0 then return end -- No rooms found
+                if not RoomToProcess then return end -- Can't find the room to process
 
-    table.sort(RoomNumbers) -- Sort ascending to find the latest easily
-    local LastRoomNumber = RoomNumbers[#RoomNumbers] -- Highest room number generated
-    local LastRoomModel = Rooms:FindFirstChild("Room" .. tostring(LastRoomNumber))
+                -- Notify logic (remains similar)
+                if not table.find(DoggedRooms, RoomToProcess) then
+                    table.insert(DoggedRooms, RoomToProcess)
+                    if ARGoing and Options.RMUnify.Value == "Current Room" then
+                        Library:Notify("Auto Rooms: Reached Room " .. CurrentRoomNumber)
+                    end
+                    if ARGoing and Options.RMUnify.Value == "Special Room" and RoomToProcess:GetAttribute("Chance") == 0 then
+                        Library:Notify("Auto Rooms: Special room '" .. RoomToProcess:GetAttribute("RawName") .. "' reached")
+                    end
+                end
 
-    -- Check if target reached (Use the Slider's value directly)
-    if LastRoomNumber >= Options.ARRoomReach.Value then -- Check if current highest room meets or exceeds target
-        FiredPrompts = {}
-        DoggedRooms = {}
-        ARCon = ARCon and ARCon:Disconnect() -- Disconnect the loop
-        ARGoing = false
-        for _, scene in CutFolder:GetChildren() do
-            scene.Parent = ClientMain.CLIENT.CutsceneHandler.Cutscenes
-        end
-        Library:Notify("Auto rooms target reached (" .. Options.ARRoomReach.Value .. ")", 3)
-        task.wait(0.5)
-        RepStorage.Events.VoidEvent:FireServer() -- Keep void event
-        return -- Stop processing
-    end
+                -- Target Reached Check
+                if CurrentRoomNumber >= Options.ARRoomReach.Value then -- Use >= for safety
+                    FiredPrompts = {}
+                    DoggedRooms = {}
+                    ARCon = ARCon and ARCon:Disconnect()
+                    ARGoing = false
+                    for _, scene in CutFolder:GetChildren() do
+                        scene.Parent = ClientMain.CLIENT.CutsceneHandler.Cutscenes
+                    end
+                    Library:Notify("Auto rooms target reached or exceeded")
+                    task.wait(0.5)
+                    RepStorage.Events.VoidEvent:FireServer() -- Keep void event
+                    return -- Stop processing
+                end
 
-    -- Identify the *next* room to process (the one with the highest number)
-    local roomToProcess = LastRoomModel
-    if not roomToProcess then return end -- Should not happen if LastRoomNumber exists
+                -- Room Specific Logic (Observatory Puzzle)
+                if RoomToProcess.Name == "Room195" then
+                    RepStorage.Events.TheObservatory.BeatPuzzle:FireServer()
+                end
 
-    -- Notification Logic (Based on the room we are about to process/open door for)
-    if not table.find(DoggedRooms, roomToProcess) then
-        table.insert(DoggedRooms, roomToProcess)
-        local roomNumStr = roomToProcess.Name:split("Room")[2]
-        if ARGoing and Options.RMUnify.Value == "Current Room" then
-            Library:Notify("Auto Rooms: Entering Room " .. roomNumStr)
-        end
-        if ARGoing and Options.RMUnify.Value == "Special Room" and roomToProcess:GetAttribute("Chance") == 0 then
-            Library:Notify("Auto Rooms: Special room '" .. roomToProcess:GetAttribute("RawName") .. "' reached")
-        end
-    end
+                -- Find Exit Mechanisms for the Current Room to Process
+                local Door = RoomToProcess:FindFirstChild("Door") or RoomToProcess:FindFirstChild("DoorNormal")
+                local Scriptable = RoomToProcess:FindFirstChild("Scriptable")
+                local Hitbox = (Door and Door:FindFirstChild("Hitbox")) or (Scriptable and Scriptable:FindFirstChild("Trigger"))
+                local Lever = RoomToProcess:FindFirstChild("CaveLever")
+                local Prompt = Lever and Lever:FindFirstChild("ProximityPrompt")
+                local Elevator = Scriptable and Scriptable:FindFirstChild("Elevator")
+                local ElevatorControl = Elevator and Elevator:FindFirstChild("Control")
+                local ElevatorPrompt = ElevatorControl and ElevatorControl:FindFirstChild("Button") and ElevatorControl.Button:FindFirstChild("ProximityPrompt")
 
-    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+                local interactionDone = false
 
-    -- Special Room Handling (Keep existing)
-    if roomToProcess.Name == "Room195" then
-        RepStorage.Events.TheObservatory.BeatPuzzle:FireServer()
-    end
+                -- Prioritize Lever/Elevator Prompts if they exist and haven't been fired
+                if Prompt and not FiredPrompts[Prompt] and Prompt.Enabled then
+                    -- PAUSE CHECK before interaction
+                    while ARGoing and isEntityBlocking() do Library:Notify("Entity detected! Pausing Auto Rooms...", 1); task.wait(1) end
+                    if not ARGoing then return end
 
-    -- Find Door/Lever/Elevator in the room we need to open/activate
-    local Door = roomToProcess:FindFirstChild("Door") or roomToProcess:FindFirstChild("DoorNormal")
-    local Scriptable = roomToProcess:FindFirstChild("Scriptable")
-    local Hitbox = (Door and Door:FindFirstChild("Hitbox")) or (Scriptable and Scriptable:FindFirstChild("Trigger"))
-    local Lever = roomToProcess:FindFirstChild("CaveLever")
-    local Prompt = Lever and Lever:FindFirstChild("ProximityPrompt")
-    local Elevator = Scriptable and Scriptable:FindFirstChild("Elevator")
-    local ElevatorControl = Elevator and Elevator:FindFirstChild("Control")
-    local ElevatorPrompt = ElevatorControl and ElevatorControl:FindFirstChild("Button") and ElevatorControl.Button:FindFirstChild("ProximityPrompt")
+                    Character:PivotTo(Lever:GetPivot())
+                    task.wait(0.1) -- Wait after TP before firing
+                    fireproximityprompt(Prompt)
+                    FiredPrompts[Prompt] = true
+                    interactionDone = true
+                    task.wait(0.2) -- Wait after firing prompt
+                elseif ElevatorPrompt and not FiredPrompts[ElevatorPrompt] and ElevatorPrompt.Enabled then
+                     -- PAUSE CHECK before interaction
+                    while ARGoing and isEntityBlocking() do Library:Notify("Entity detected! Pausing Auto Rooms...", 1); task.wait(1) end
+                    if not ARGoing then return end
 
-    local doorOpened = false -- Flag to track if we successfully opened something this step
+                    Character:PivotTo(ElevatorControl:GetPivot())
+                    task.wait(0.1)
+                    fireproximityprompt(ElevatorPrompt)
+                    FiredPrompts[ElevatorPrompt] = true
+                    interactionDone = true
+                    task.wait(0.2)
+                -- Else, handle Hitbox-based doors if no prompt was handled
+                elseif Hitbox and not interactionDone then
+                    -- Check if the *next* room exists before triggering the hitbox
+                    local nextRoomExists = Rooms:FindFirstChild("Room" .. tostring(NextRoomNumber))
+                    if nextRoomExists then
+                        -- PAUSE CHECK before interaction
+                        while ARGoing and isEntityBlocking() do Library:Notify("Entity detected! Pausing Auto Rooms...", 1); task.wait(1) end
+                        if not ARGoing then return end
 
-    -- Try opening Lever first
-    if Prompt and Prompt.Enabled and not FiredPrompts[Prompt] then
-        -- warn("Auto Rooms: Attempting to fire Lever Prompt in", roomToProcess.Name)
-        local originalCFrame = Character.HumanoidRootPart.CFrame
-        Character:PivotTo(Lever:GetPivot() * CFrame.new(0, -2, 5)) -- Move closer
-        task.wait(0.1)
-        fireproximityprompt(Prompt)
-        FiredPrompts[Prompt] = true
-        task.wait(0.2) -- Wait a bit after firing
-        Character:PivotTo(originalCFrame)
-        doorOpened = true -- Consider lever activation as "opening"
-    -- Try Elevator next
-    elseif ElevatorPrompt and ElevatorPrompt.Enabled and not FiredPrompts[ElevatorPrompt] then
-         -- warn("Auto Rooms: Attempting to fire Elevator Prompt in", roomToProcess.Name)
-         local originalCFrame = Character.HumanoidRootPart.CFrame
-         Character:PivotTo(ElevatorControl.Button:GetPivot() * CFrame.new(0, 0, 5)) -- Move closer
-         task.wait(0.1)
-         fireproximityprompt(ElevatorPrompt)
-         FiredPrompts[ElevatorPrompt] = true
-         task.wait(0.2) -- Wait a bit after firing
-         Character:PivotTo(originalCFrame)
-         doorOpened = true -- Consider elevator activation as "opening"
-    -- Try Door Hitbox last (if others weren't applicable)
-    elseif Hitbox and not Door:FindFirstChild("DoorBlock") then -- Check if door isn't blocked
-        -- warn("Auto Rooms: Attempting to trigger Door Hitbox in", roomToProcess.Name)
-        local targetCFrame = roomToProcess:GetPivot() * CFrame.new(0, 3, 0) -- Target center of the room
-        local originalCFrame = Character.HumanoidRootPart.CFrame
+                        local targetCFrame = RoomToProcess:GetPivot() * CFrame.new(0, 5, 0) -- Position near the room center
+                        Character:PivotTo(targetCFrame) -- Move player near the hitbox interaction point
+                        task.wait(0.1)
+                        Hitbox.CFrame = Character.PrimaryPart.CFrame -- Move hitbox to player
+                        Hitbox.Size = Vector3.new(10, 10, 10) -- Reasonable size
+                        -- No need to set huge size, just touch it
+                        interactionDone = true
+                        task.wait(0.2) -- Wait after hitbox interaction
+                    else
+                        -- Don't trigger the door if the next room hasn't loaded yet
+                        -- warn("Auto Rooms: Waiting for Room " .. NextRoomNumber .. " to load...")
+                        task.wait(0.5) -- Wait a bit longer for room generation
+                        return -- Skip rest of logic for this step, try again next step
+                    end
+                end
 
-        -- Check if hitbox manipulation is needed (avoids unnecessary TP if already passed)
-        -- A simple check: if player is roughly behind the door relative to room center
-        local playerPos = Character.HumanoidRootPart.Position
-        local roomCenter = roomToProcess:GetPivot().Position
-        local doorPos = Door:GetPivot().Position
-        local playerToRoom = (roomCenter - playerPos).Unit
-        local doorToRoom = (roomCenter - doorPos).Unit
-        -- If player is further away from room center along the door's axis than the door itself, likely need TP
-        if playerToRoom:Dot(doorToRoom) > 0.5 and (playerPos - roomCenter).Magnitude > (doorPos - roomCenter).Magnitude then
-             -- Teleport slightly past the door's expected position
-             local doorForward = Door:GetPivot().LookVector
-             targetCFrame = Door:GetPivot() * CFrame.new(0, 3, 5) -- TP slightly in front of the door
+                -- AUTO LOOT INTEGRATION: If an interaction happened and the toggle is on
+                if interactionDone and Toggles.AR_AutoLootEnabled:GetState() then
+                    -- PAUSE CHECK before looting
+                    while ARGoing and isEntityBlocking() do
+                        Library:Notify("Entity detected! Pausing AutoRoomLoot...", 1)
+                        task.wait(1)
+                    end
+                    if not ARGoing then return end -- Check again if stopped during pause
 
-             Character:PivotTo(targetCFrame)
-             Hitbox.CFrame = targetCFrame -- Move hitbox to player briefly
-             Hitbox.Size = Vector3.new(10, 10, 10) -- Smaller hitbox for TP method
-             task.wait(0.1) -- Short wait for trigger
-             -- Hitbox.Size = Vector3.new(1,1,1) -- Reset size (optional, might despawn)
-             -- Hitbox.CFrame = Door:GetPivot() * CFrame.new(0,0,-1000) -- Move away (optional)
-             Character:PivotTo(originalCFrame) -- Return player
-             doorOpened = true
-        else
-            -- Player might be close enough, try large hitbox without TP first
-            Hitbox.CFrame = Character.HumanoidRootPart.CFrame -- Move hitbox to player
-            Hitbox.Size = Vector3.new(2048, 2048, 2048) -- Use large size
-            task.wait(0.05) -- Very short wait
-            -- No need to reset CFrame/Size immediately if it worked
-            doorOpened = true -- Assume it worked, game logic will confirm by generating next room
-        end
-    end
+                    -- Execute the loot function for the room we just interacted with
+                    executeAutoRoomLoot(RoomToProcess, Toggles.AR_LootSideRoomsEnabled:GetState())
 
-    -- AUTO LOOT LOGIC: If a door/lever/elevator was successfully activated *this step*
-    if doorOpened and Toggles.AutoLootDuringAutoRooms.Value then
-        -- We loot the room we just *finished* processing (the one whose door we opened)
-        local roomToLoot = roomToProcess
-        -- warn("--- Auto Rooms: Triggering Auto Loot for", roomToLoot.Name, "---")
-        -- Call the integrated loot function with overrides
-        executeAutoLootForRoom(
-            roomToLoot,
-            true, -- Force Fast Mode for Auto Rooms
-            Toggles.AutoLootSideRoomsDuringAutoRooms.Value -- Use the specific toggle for side rooms
-        )
-        -- warn("--- Auto Rooms: Finished Auto Loot for", roomToLoot.Name, "---")
-        -- No explicit wait needed here, executeAutoLootForRoom has internal waits
-    end
+                    -- PAUSE CHECK after looting (before potentially moving to next room logic)
+                     while ARGoing and isEntityBlocking() do
+                        Library:Notify("Entity detected! Pausing Auto Rooms after loot...", 1)
+                        task.wait(1)
+                    end
+                    if not ARGoing then return end
+                end
 
-    -- Small delay at the end of each step to prevent excessive CPU usage
-    task.wait(0.1)
+                -- If no interaction was possible (e.g., waiting for puzzle, next room), just yield
+                if not interactionDone then
+                    task.wait()
+                end
 
-end) -- End of RunService.Stepped connection function
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        else
-            for _, scene in CutFolder:GetChildren() do
-                scene.Parent = ClientMain.CLIENT.CutsceneHandler.Cutscenes
-            end
+            end) -- End of RunService.Stepped connection
+        else -- Stop button pressed
             Library:Notify("Auto rooms stopped")
             FiredPrompts = {}
             DoggedRooms = {}
             ARCon = ARCon and ARCon:Disconnect()
             ARGoing = false
-            RepStorage.Events.VoidEvent:FireServer()
+            -- Restore cutscenes
+            for _, scene in CutFolder:GetChildren() do
+                scene.Parent = ClientMain.CLIENT.CutsceneHandler.Cutscenes
+            end
+            RepStorage.Events.VoidEvent:FireServer() -- Keep void event
         end
 	end,
 
@@ -831,17 +1021,15 @@ end) -- End of RunService.Stepped connection function
 	Visible = true,
 })
 
+-- Existing RMUnify Dropdown (no changes needed here)
 RightGroupBox:AddDropdown("RMUnify", {
 	Values = { "Current Room", "Special Room"},
-	Default = 1, 
-	Multi = false, 
-
+	Default = 1,
+	Multi = false,
 	Text = "Notifications",
-
-	Searchable = false, 
-
-	Disabled = false, 
-	Visible = true, 
+	Searchable = false,
+	Disabled = false,
+	Visible = true,
 })
 
 
@@ -1068,75 +1256,6 @@ LeftGroupBox:AddButton({
 	Disabled = false,
 	Visible = true,
 })
-
-local function executeAutoLootForRoom(roomModel, useFastModeOverride, lootSideRoomsOverride)
-    -- This version is specifically for Auto Rooms integration.
-    -- It takes overrides for fast mode and side rooms.
-    -- It does NOT use the global wait slider or show notifications.
-
-    -- warn("--- Auto Rooms: Executing Auto Loot for Room:", roomModel and roomModel.Name or "Unknown")
-    if not roomModel or not roomModel:IsA("Model") then
-        warn("--- Auto Rooms Loot Error: Invalid roomModel provided.")
-        return
-    end
-
-    local player = Players.LocalPlayer
-    local character = player.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then
-        warn("--- Auto Rooms Loot Error: Player character not found.")
-        return
-    end
-
-    local goldItemNames = {"Coin", "CoinStack", "GoldBar", "GoldBarAndDiamonds"}
-    local itemsLootedCount = 0
-    local partsToLootAfterOpening = {}
-    local overallContainerIndex = 0 -- Local index for this specific room loot
-
-    -- Re-use the existing reliable trigger function (ensure it's accessible)
-    local function triggerContainerPrompt_Reliable(prompt, containerPart, promptContextName)
-        -- warn("    -- Triggering Container Prompt Reliably:", promptContextName)
-        if not (containerPart and containerPart.Parent) then warn("      -- ERROR: Invalid container part."); return end; if not (prompt and prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Enabled) then warn("      -- ERROR: Invalid or disabled prompt."); return end; local originalCFrame = character.HumanoidRootPart.CFrame; local promptParent = prompt.Parent; local targetCFrame; if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot() elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame elseif promptParent:IsA("Attachment") then targetCFrame = promptParent.WorldCFrame end; if not targetCFrame then warn("      -- ERROR: Could not get target CFrame."); character:PivotTo(originalCFrame); return end
-        character:PivotTo(targetCFrame); task.wait(0.07); local success1, err1 = pcall(fireproximityprompt, prompt); task.wait(0.08); if prompt and prompt.Parent and prompt.Enabled then pcall(fireproximityprompt, prompt); task.wait(0.05) end; character:PivotTo(originalCFrame); -- warn("      -- Finished reliable trigger attempt for:", promptContextName)
-    end
-
-    -- Re-use the existing teleport loot function (ensure it's accessible)
-     local function tryFirePromptForItem_Teleport(itemPromptRef, itemModel, itemContextName)
-         if not (itemModel and itemModel.Parent) then return true end
-         local originalCFrame = character.HumanoidRootPart.CFrame; local looted = false; local attempts = 0; local maxLoopTime = 7; local startTime = tick(); local firstAttempt = true
-         while itemModel and itemModel.Parent and (tick() - startTime < maxLoopTime) do if firstAttempt then task.wait(0.1); firstAttempt = false end; local currentItemPrompt = itemModel:FindFirstChild("ItemPrompt"); if currentItemPrompt and currentItemPrompt:IsA("ProximityPrompt") and currentItemPrompt.Enabled then local promptParent = currentItemPrompt.Parent; if not promptParent then break end; local targetCFrame; if promptParent:IsA("Model") then targetCFrame = promptParent:GetPivot() elseif promptParent:IsA("BasePart") then targetCFrame = promptParent.CFrame end; if targetCFrame then character:PivotTo(targetCFrame); task.wait(0.05); local success, err = pcall(fireproximityprompt, currentItemPrompt); task.wait(0.07); if not itemModel or not itemModel.Parent then looted = true; break end end end; attempts = attempts + 1; task.wait(0.1) end
-         character:PivotTo(originalCFrame); if not itemModel or not itemModel.Parent then looted = true else looted = false; warn("    -- WARNING: Item", itemContextName, "still exists after TP loot attempts.") end; return looted
-    end
-
-    -- Ensure findAndLootGold and processItemForOpening are modified to accept overrides (See Section 4)
-    -- Make sure they are accessible here (either global or passed/required)
-
-    -- Phase 1: Check True State, Trigger if Needed, Identify Loot Locations
-    -- warn("--- Auto Rooms Loot: Starting Phase 1 ---")
-    processItemForOpening(roomModel, lootSideRoomsOverride, partsToLootAfterOpening, overallContainerIndex, triggerContainerPrompt_Reliable) -- Pass overrides and necessary refs
-    -- warn("--- Auto Rooms Loot: Finished Phase 1 ---")
-    -- warn("-- Phase 1 Summary: Identified", #partsToLootAfterOpening, "potential loot locations.")
-
-    -- Intermediate Step: Minimal Wait (Auto Rooms needs speed)
-    if #partsToLootAfterOpening > 0 then
-        task.wait(0.1) -- Short fixed wait after opening containers
-    end
-
-    -- Phase 2: Loot Gold from Identified Locations
-    if #partsToLootAfterOpening > 0 then
-        -- warn("--- Auto Rooms Loot: Starting Phase 2 ---")
-        local uniquePartsLooted = {}
-        for i, part in ipairs(partsToLootAfterOpening) do
-            if not (part and part.Parent) then continue end
-            if uniquePartsLooted[part] then continue end
-            local contextName = part.Name; local parentModel = part:FindFirstAncestorWhichIsA("Model"); if parentModel then contextName = parentModel.Name .. " " .. contextName end
-            findAndLootGold(part, contextName .. " #" .. i, useFastModeOverride, tryFirePromptForItem_Teleport) -- Pass override and necessary refs
-            uniquePartsLooted[part] = true
-        end
-        -- warn("--- Auto Rooms Loot: Finished Phase 2 ---")
-    end
-
-    -- warn("--- Auto Rooms: Auto Loot Finished for Room:", roomModel and roomModel.Name or "Unknown")
-end
 
 -- Define variables for the controls first
 local lootWaitTime = 0.1 -- Default wait time
